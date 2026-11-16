@@ -206,8 +206,13 @@ func TestParentPaths(t *testing.T) {
 		t.Fatalf("want fork and merge, got %d", cross)
 	}
 	g := scene.Frame(built, 0, 60, 20)
-	if !strings.ContainsAny(g.String(), "╭╮╰╯") {
-		t.Fatal("parent curves absent")
+	// The fork bend points back up at its child and across at the parent;
+	// the merge bend survives the through main-line vertical as a junction.
+	if g[12][31].Rune != '╯' {
+		t.Fatalf("fork corner points the wrong way: %q", g.String())
+	}
+	if g[9][3].Rune != '├' {
+		t.Fatalf("merge corner lost to the lane vertical: %q", g.String())
 	}
 	for _, m := range built.Marks {
 		if m.Lane == 1 && m.Style != scene.Faded {
@@ -217,7 +222,7 @@ func TestParentPaths(t *testing.T) {
 	// Without parent evidence, separate lanes must never look connected.
 	s.Commits[1].Parents = nil
 	s.Commits[3].Parents = []string{"base"}
-	if strings.ContainsAny(scene.Frame(scene.Build(s), 0, 60, 20).String(), "╭╮╰╯") {
+	if strings.ContainsAny(scene.Frame(scene.Build(s), 0, 60, 20).String(), "╭╮╰╯├┤") {
 		t.Fatal("junction without cross-lane parent")
 	}
 }

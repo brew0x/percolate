@@ -3,7 +3,7 @@
 | Mark | Repository object | Rule |
 | --- | --- | --- |
 | Branch name | Branch | Lane, in snapshot branch order. Commits and PRs referencing missing branches introduce a lane. |
-| `│ ─ ╭ ╮ ╰ ╯` in the commit region | Commit parent link | Paths connect recorded commits to known parents. Cross-lane parents form rounded fork or merge elbows at the parent row. Missing parents draw no path. |
+| `│ ─ ╭ ╮ ╰ ╯ ├ ┤ ┬ ┴ ┼` in the commit region | Commit parent link | Paths connect recorded commits to known parents. Cross-lane parents form rounded fork or merge elbows at the parent row: each corner points back at the child commit and across at the parent. A cell carrying several recorded segments shows their union as a junction (`├` branch right, `┤` branch left, `┬` `┴` `┼` three-way), so no recorded path hides another. Missing parents draw no path. |
 | `●` | Commit | Newest at top, descending timestamp; SHA breaks timestamp ties. Position is global commit rank, not elapsed time; parent endpoints share the same row across lanes. |
 | `◇`, `─`, `▼`, `#N` | Pull request | Diamond at head, path toward base, arrow at base. PR number labels the path. All recorded states retain their path; state and reviews are in details. |
 | `‹`, `›` | Pull request | Base lies beyond this viewport; path continues toward it. |
@@ -13,7 +13,7 @@
 | `−` | Other completed workflow | Cancelled, skipped, neutral, or another conclusion; never implies success. |
 | `◆ tag` | Release | At the bottom of the lane containing its head commit. |
 | `▣ environment` | Deployment | At the bottom of the lane containing its head commit; state in details. |
-| Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. No wall clock is consulted. |
+| Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. Where paths share a cell, the cell dims only when every path through it dims. No wall clock is consulted. |
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
 

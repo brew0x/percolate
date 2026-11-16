@@ -190,8 +190,9 @@ func RunGlyph(conclusion string) rune {
 // VisibleLanes is shared by viewport navigation and rendering.
 func VisibleLanes(width int) int { return max(1, (width-4)/14) }
 
-// Frame uses no time, I/O, randomness, or terminal state. Overlaps are resolved
-// in snapshot order; the selected object is drawn last so it is always inspectable.
+// Frame uses no time, I/O, randomness, or terminal state. Path cells show the
+// union of the recorded segments through them; mark overlaps resolve in
+// snapshot order, and the selected object is drawn last so it is inspectable.
 func Frame(s Scene, frameIndex, width, height int) Grid {
 	width = max(0, width)
 	height = max(0, height)
@@ -236,36 +237,75 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		}
 		return top
 	}
-	// Draw only recorded parent paths. Rounded elbows join lanes at their
-	// commits; clipping retains offscreen edges without inventing endpoints.
+	// Draw only recorded parent paths. Each path cell shows the union of the
+	// recorded segments through it, so a bend never hides a through path and
+	// draw order cannot erase a turn. Missing parents draw nothing; clipping
+	// retains offscreen edges without inventing endpoints.
+	type dirs struct{ up, down, left, right bool }
+	type pathCell struct {
+		x, y     int
+		dirs     dirs
+		allFaded bool
+	}
+	cells := map[[2]int]*pathCell{}
+	segment := func(x, y int, d dirs, faded bool) {
+		c, ok := cells[[2]int{x, y}]
+		if !ok {
+			c = &pathCell{x: x, y: y, allFaded: true}
+			cells[[2]int{x, y}] = c
+		}
+		c.dirs.up = c.dirs.up || d.up
+		c.dirs.down = c.dirs.down || d.down
+		c.dirs.left = c.dirs.left || d.left
+		c.dirs.right = c.dirs.right || d.right
+		c.allFaded = c.allFaded && faded
+	}
 	for _, link := range s.Links {
 		x, px := xpos(link.Child.Lane), xpos(link.Parent.Lane)
 		y, py := row(link.Child), row(link.Parent)
-		style := LaneStyle
-		if link.Child.Style == Faded || link.Parent.Style == Faded {
-			style = Faded
-		}
+		faded := link.Child.Style == Faded || link.Parent.Style == Faded
 		if visible(link.Child.Lane) {
-			for yy := min(y, py); yy <= max(y, py); yy++ {
-				put(x, yy, '│', style)
+			lo, hi := min(y, py), max(y, py)
+			for yy := lo; yy <= hi; yy++ {
+				segment(x, yy, dirs{up: yy > lo, down: yy < hi}, faded)
 			}
 		}
 		if x != px {
-			for xx := max(0, min(x, px)); xx <= min(width-1, max(x, px)); xx++ {
-				put(xx, py, '─', style)
-			}
-			left, right := '╰', '╮'
-			if py < y {
-				left, right = '╭', '╯'
-			}
-			if x < px {
-				put(x, py, left, style)
-				put(px, py, right, style)
-			} else {
-				put(px, py, left, style)
-				put(x, py, right, style)
+			lo, hi := max(0, min(x, px)), min(width-1, max(x, px))
+			for xx := lo; xx <= hi; xx++ {
+				segment(xx, py, dirs{left: xx > min(x, px), right: xx < max(x, px)}, faded)
 			}
 		}
+	}
+	for _, c := range cells {
+		glyph := '─'
+		switch {
+		case c.dirs.up && c.dirs.down && c.dirs.left && c.dirs.right:
+			glyph = '┼'
+		case c.dirs.up && c.dirs.down && c.dirs.right:
+			glyph = '├'
+		case c.dirs.up && c.dirs.down && c.dirs.left:
+			glyph = '┤'
+		case c.dirs.down && c.dirs.left && c.dirs.right:
+			glyph = '┬'
+		case c.dirs.up && c.dirs.left && c.dirs.right:
+			glyph = '┴'
+		case c.dirs.up && c.dirs.right:
+			glyph = '╰'
+		case c.dirs.up && c.dirs.left:
+			glyph = '╯'
+		case c.dirs.down && c.dirs.right:
+			glyph = '╭'
+		case c.dirs.down && c.dirs.left:
+			glyph = '╮'
+		case c.dirs.up || c.dirs.down:
+			glyph = '│'
+		}
+		style := LaneStyle
+		if c.allFaded {
+			style = Faded
+		}
+		put(c.x, c.y, glyph, style)
 	}
 	draw := func(m Mark, selected bool) {
 		if !visible(m.Lane) {
