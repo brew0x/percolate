@@ -1,0 +1,5 @@
+/percolate
+/bin/
+/dist/
+*.test
+coverage.out
