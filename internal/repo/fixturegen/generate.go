@@ -30,6 +30,25 @@ func Generate(seed int64, branches, commits, prs, runs int) repo.Snapshot {
 		if last[lane] != "" {
 			parents = []string{last[lane]}
 		}
+		// Seeded cross-lane history so golden frames exercise the parent
+		// paths of issue #2: some commits fork off the neighbouring lane's
+		// recorded tip, later commits merge one back, and the newest commit
+		// merges the final tip of its neighbour so that lane ends merged.
+		if i == commits-1 && branches > 2 {
+			if tip := last[(lane+branches-1)%branches]; tip != "" && tip != last[lane] {
+				parents = append(parents, tip)
+			}
+		} else if i >= branches && branches > 1 {
+			if i%9 == 4 {
+				if tip := last[(lane+branches-1)%branches]; tip != "" {
+					parents = []string{tip}
+				}
+			} else if i%11 == 7 {
+				if tip := last[(lane+1)%branches]; tip != "" && tip != last[lane] {
+					parents = append(parents, tip)
+				}
+			}
+		}
 		last[lane] = sha
 		s.Commits = append(s.Commits, repo.Commit{SHA: sha, Parents: parents, Branch: s.Branches[lane].Name, Author: "robin", Time: s.Now.Add(-time.Duration(commits-i) * time.Hour)})
 	}

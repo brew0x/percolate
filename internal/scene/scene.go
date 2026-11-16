@@ -49,7 +49,14 @@ type Mark struct {
 	Style                   Style
 	Running                 bool
 }
+
+// Link is a recorded commit-parent edge; missing parents never invent junctions.
+type Link struct {
+	Child, Parent Mark
+}
+
 type Scene struct {
+	Links      []Link
 	Lanes      []string
 	Marks      []Mark
 	FirstLane  int
@@ -79,22 +86,49 @@ func Build(s repo.Snapshot) Scene {
 		}
 		return commits[i].Time.After(commits[j].Time)
 	})
-	totals := map[string]int{}
 	for _, c := range commits {
 		addLane(c.Branch)
-		totals[c.Branch]++
 	}
-	ranks := map[string]int{}
 	bySHA := map[string]Mark{}
-	for _, c := range commits {
+	for rank, c := range commits {
 		style := Fresh
 		if s.Now.Sub(c.Time) > 48*time.Hour {
 			style = Faded
 		}
-		m := Mark{ID: "commit:" + c.SHA, Kind: "commit", Label: short(c.SHA), Detail: fmt.Sprintf("%s · %s · %s", c.SHA, c.Author, c.Time.Format(time.RFC3339)), Lane: lanes[c.Branch], Rank: ranks[c.Branch], Total: totals[c.Branch], Glyph: '●', Style: style}
-		ranks[c.Branch]++
+		m := Mark{ID: "commit:" + c.SHA, Kind: "commit", Label: short(c.SHA), Detail: fmt.Sprintf("%s · %s · %s", c.SHA, c.Author, c.Time.Format(time.RFC3339)), Lane: lanes[c.Branch], Rank: rank, Total: len(commits), Glyph: '●', Style: style}
 		out.Marks = append(out.Marks, m)
 		bySHA[c.SHA] = m
+	}
+	// A secondary parent on another lane is evidence of a merge, unlike a
+	// pull request state. Fade that lane only when its recorded tip was merged.
+	tips := map[int]string{}
+	for _, c := range commits {
+		m := bySHA[c.SHA]
+		if _, ok := tips[m.Lane]; !ok {
+			tips[m.Lane] = c.SHA
+		}
+	}
+	merged := map[int]bool{}
+	for _, c := range commits {
+		for _, sha := range c.Parents[min(1, len(c.Parents)):] {
+			if p, ok := bySHA[sha]; ok && p.Lane != bySHA[c.SHA].Lane && tips[p.Lane] == sha {
+				merged[p.Lane] = true
+			}
+		}
+	}
+	for i, m := range out.Marks {
+		if merged[m.Lane] {
+			m.Style = Faded
+			out.Marks[i] = m
+			bySHA[strings.TrimPrefix(m.ID, "commit:")] = m
+		}
+	}
+	for _, c := range commits {
+		for _, parent := range c.Parents {
+			if p, ok := bySHA[parent]; ok {
+				out.Links = append(out.Links, Link{Child: bySHA[c.SHA], Parent: p})
+			}
+		}
 	}
 	for i, p := range s.PullRequests {
 		reviews := make([]string, 0, len(p.Reviews))
@@ -156,8 +190,9 @@ func RunGlyph(conclusion string) rune {
 // VisibleLanes is shared by viewport navigation and rendering.
 func VisibleLanes(width int) int { return max(1, (width-4)/14) }
 
-// Frame uses no time, I/O, randomness, or terminal state. Overlaps are resolved
-// in snapshot order; the selected object is drawn last so it is always inspectable.
+// Frame uses no time, I/O, randomness, or terminal state. Path cells show the
+// union of the recorded segments through them; mark overlaps resolve in
+// snapshot order, and the selected object is drawn last so it is inspectable.
 func Frame(s Scene, frameIndex, width, height int) Grid {
 	width = max(0, width)
 	height = max(0, height)
@@ -194,12 +229,84 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	for i := start; i < start+count; i++ {
 		x := xpos(i)
 		label(x, 2, s.Lanes[i], span-2, Fresh)
-		for y := 3; y < height-2; y++ {
-			put(x, y, '│', LaneStyle)
-		}
-		put(x, height-2, '╵', LaneStyle)
 	}
 	top, bottom := 4, max(4, height*3/5)
+	row := func(m Mark) int {
+		if m.Total > 1 {
+			return top + m.Rank*(bottom-top)/(m.Total-1)
+		}
+		return top
+	}
+	// Draw only recorded parent paths. Each path cell shows the union of the
+	// recorded segments through it, so a bend never hides a through path and
+	// draw order cannot erase a turn. Missing parents draw nothing; clipping
+	// retains offscreen edges without inventing endpoints.
+	type dirs struct{ up, down, left, right bool }
+	type pathCell struct {
+		x, y     int
+		dirs     dirs
+		allFaded bool
+	}
+	cells := map[[2]int]*pathCell{}
+	segment := func(x, y int, d dirs, faded bool) {
+		c, ok := cells[[2]int{x, y}]
+		if !ok {
+			c = &pathCell{x: x, y: y, allFaded: true}
+			cells[[2]int{x, y}] = c
+		}
+		c.dirs.up = c.dirs.up || d.up
+		c.dirs.down = c.dirs.down || d.down
+		c.dirs.left = c.dirs.left || d.left
+		c.dirs.right = c.dirs.right || d.right
+		c.allFaded = c.allFaded && faded
+	}
+	for _, link := range s.Links {
+		x, px := xpos(link.Child.Lane), xpos(link.Parent.Lane)
+		y, py := row(link.Child), row(link.Parent)
+		faded := link.Child.Style == Faded || link.Parent.Style == Faded
+		if visible(link.Child.Lane) {
+			lo, hi := min(y, py), max(y, py)
+			for yy := lo; yy <= hi; yy++ {
+				segment(x, yy, dirs{up: yy > lo, down: yy < hi}, faded)
+			}
+		}
+		if x != px {
+			lo, hi := max(0, min(x, px)), min(width-1, max(x, px))
+			for xx := lo; xx <= hi; xx++ {
+				segment(xx, py, dirs{left: xx > min(x, px), right: xx < max(x, px)}, faded)
+			}
+		}
+	}
+	for _, c := range cells {
+		glyph := '─'
+		switch {
+		case c.dirs.up && c.dirs.down && c.dirs.left && c.dirs.right:
+			glyph = '┼'
+		case c.dirs.up && c.dirs.down && c.dirs.right:
+			glyph = '├'
+		case c.dirs.up && c.dirs.down && c.dirs.left:
+			glyph = '┤'
+		case c.dirs.down && c.dirs.left && c.dirs.right:
+			glyph = '┬'
+		case c.dirs.up && c.dirs.left && c.dirs.right:
+			glyph = '┴'
+		case c.dirs.up && c.dirs.right:
+			glyph = '╰'
+		case c.dirs.up && c.dirs.left:
+			glyph = '╯'
+		case c.dirs.down && c.dirs.right:
+			glyph = '╭'
+		case c.dirs.down && c.dirs.left:
+			glyph = '╮'
+		case c.dirs.up || c.dirs.down:
+			glyph = '│'
+		}
+		style := LaneStyle
+		if c.allFaded {
+			style = Faded
+		}
+		put(c.x, c.y, glyph, style)
+	}
 	draw := func(m Mark, selected bool) {
 		if !visible(m.Lane) {
 			return
