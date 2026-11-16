@@ -171,3 +171,53 @@ func TestGeneratedFixture(t *testing.T) {
 		t.Fatal("small fixture lost its demonstration states")
 	}
 }
+
+// Every junction comes from a known parent, even with missing history and PRs.
+func TestParentPaths(t *testing.T) {
+	now := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	s := repo.Snapshot{Now: now, Branches: []repo.Branch{{Name: "main"}, {Name: "topic"}}, Commits: []repo.Commit{
+		{SHA: "root", Branch: "main", Time: now.Add(-3 * time.Hour)},
+		{SHA: "fork", Branch: "topic", Parents: []string{"root"}, Time: now.Add(-2 * time.Hour)},
+		{SHA: "base", Branch: "main", Parents: []string{"root", "missing"}, Time: now.Add(-time.Hour)},
+		{SHA: "merge", Branch: "main", Parents: []string{"base", "fork"}, Time: now},
+	}}
+	built := scene.Build(s)
+	if len(built.Links) != 4 {
+		t.Fatalf("got %d parent paths", len(built.Links))
+	}
+	cross := 0
+	for _, link := range built.Links {
+		found := false
+		for _, c := range s.Commits {
+			for _, p := range c.Parents {
+				if link.Child.ID == "commit:"+c.SHA && link.Parent.ID == "commit:"+p {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("invented junction: %+v", link)
+		}
+		if link.Child.Lane != link.Parent.Lane {
+			cross++
+		}
+	}
+	if cross != 2 {
+		t.Fatalf("want fork and merge, got %d", cross)
+	}
+	g := scene.Frame(built, 0, 60, 20)
+	if !strings.ContainsAny(g.String(), "╭╮╰╯") {
+		t.Fatal("parent curves absent")
+	}
+	for _, m := range built.Marks {
+		if m.Lane == 1 && m.Style != scene.Faded {
+			t.Fatal("merged tip lane did not fade")
+		}
+	}
+	// Without parent evidence, separate lanes must never look connected.
+	s.Commits[1].Parents = nil
+	s.Commits[3].Parents = []string{"base"}
+	if strings.ContainsAny(scene.Frame(scene.Build(s), 0, 60, 20).String(), "╭╮╰╯") {
+		t.Fatal("junction without cross-lane parent")
+	}
+}

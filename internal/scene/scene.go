@@ -49,7 +49,14 @@ type Mark struct {
 	Style                   Style
 	Running                 bool
 }
+
+// Link is a recorded commit-parent edge; missing parents never invent junctions.
+type Link struct {
+	Child, Parent Mark
+}
+
 type Scene struct {
+	Links      []Link
 	Lanes      []string
 	Marks      []Mark
 	FirstLane  int
@@ -79,22 +86,49 @@ func Build(s repo.Snapshot) Scene {
 		}
 		return commits[i].Time.After(commits[j].Time)
 	})
-	totals := map[string]int{}
 	for _, c := range commits {
 		addLane(c.Branch)
-		totals[c.Branch]++
 	}
-	ranks := map[string]int{}
 	bySHA := map[string]Mark{}
-	for _, c := range commits {
+	for rank, c := range commits {
 		style := Fresh
 		if s.Now.Sub(c.Time) > 48*time.Hour {
 			style = Faded
 		}
-		m := Mark{ID: "commit:" + c.SHA, Kind: "commit", Label: short(c.SHA), Detail: fmt.Sprintf("%s · %s · %s", c.SHA, c.Author, c.Time.Format(time.RFC3339)), Lane: lanes[c.Branch], Rank: ranks[c.Branch], Total: totals[c.Branch], Glyph: '●', Style: style}
-		ranks[c.Branch]++
+		m := Mark{ID: "commit:" + c.SHA, Kind: "commit", Label: short(c.SHA), Detail: fmt.Sprintf("%s · %s · %s", c.SHA, c.Author, c.Time.Format(time.RFC3339)), Lane: lanes[c.Branch], Rank: rank, Total: len(commits), Glyph: '●', Style: style}
 		out.Marks = append(out.Marks, m)
 		bySHA[c.SHA] = m
+	}
+	// A secondary parent on another lane is evidence of a merge, unlike a
+	// pull request state. Fade that lane only when its recorded tip was merged.
+	tips := map[int]string{}
+	for _, c := range commits {
+		m := bySHA[c.SHA]
+		if _, ok := tips[m.Lane]; !ok {
+			tips[m.Lane] = c.SHA
+		}
+	}
+	merged := map[int]bool{}
+	for _, c := range commits {
+		for _, sha := range c.Parents[min(1, len(c.Parents)):] {
+			if p, ok := bySHA[sha]; ok && p.Lane != bySHA[c.SHA].Lane && tips[p.Lane] == sha {
+				merged[p.Lane] = true
+			}
+		}
+	}
+	for i, m := range out.Marks {
+		if merged[m.Lane] {
+			m.Style = Faded
+			out.Marks[i] = m
+			bySHA[strings.TrimPrefix(m.ID, "commit:")] = m
+		}
+	}
+	for _, c := range commits {
+		for _, parent := range c.Parents {
+			if p, ok := bySHA[parent]; ok {
+				out.Links = append(out.Links, Link{Child: bySHA[c.SHA], Parent: p})
+			}
+		}
 	}
 	for i, p := range s.PullRequests {
 		reviews := make([]string, 0, len(p.Reviews))
@@ -194,12 +228,45 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	for i := start; i < start+count; i++ {
 		x := xpos(i)
 		label(x, 2, s.Lanes[i], span-2, Fresh)
-		for y := 3; y < height-2; y++ {
-			put(x, y, '│', LaneStyle)
-		}
-		put(x, height-2, '╵', LaneStyle)
 	}
 	top, bottom := 4, max(4, height*3/5)
+	row := func(m Mark) int {
+		if m.Total > 1 {
+			return top + m.Rank*(bottom-top)/(m.Total-1)
+		}
+		return top
+	}
+	// Draw only recorded parent paths. Rounded elbows join lanes at their
+	// commits; clipping retains offscreen edges without inventing endpoints.
+	for _, link := range s.Links {
+		x, px := xpos(link.Child.Lane), xpos(link.Parent.Lane)
+		y, py := row(link.Child), row(link.Parent)
+		style := LaneStyle
+		if link.Child.Style == Faded || link.Parent.Style == Faded {
+			style = Faded
+		}
+		if visible(link.Child.Lane) {
+			for yy := min(y, py); yy <= max(y, py); yy++ {
+				put(x, yy, '│', style)
+			}
+		}
+		if x != px {
+			for xx := max(0, min(x, px)); xx <= min(width-1, max(x, px)); xx++ {
+				put(xx, py, '─', style)
+			}
+			left, right := '╰', '╮'
+			if py < y {
+				left, right = '╭', '╯'
+			}
+			if x < px {
+				put(x, py, left, style)
+				put(px, py, right, style)
+			} else {
+				put(px, py, left, style)
+				put(x, py, right, style)
+			}
+		}
+	}
 	draw := func(m Mark, selected bool) {
 		if !visible(m.Lane) {
 			return
