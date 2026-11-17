@@ -329,6 +329,7 @@ func TestLiveRefreshStartsTransition(t *testing.T) {
 	day2 := day1.Add(24 * time.Hour)
 	day3 := day2.Add(24 * time.Hour)
 	prev := repo.Snapshot{
+		Now:      day3,
 		Branches: []repo.Branch{{Name: "main"}},
 		Commits: []repo.Commit{
 			{SHA: sha(1), Branch: "main", Author: "robin", Time: day3},
@@ -337,6 +338,7 @@ func TestLiveRefreshStartsTransition(t *testing.T) {
 		},
 	}
 	next := repo.Snapshot{
+		Now:      day3.Add(time.Hour),
 		Branches: []repo.Branch{{Name: "main"}},
 		Commits: append([]repo.Commit{
 			{SHA: sha(4), Branch: "main", Author: "robin", Time: day1.Add(12 * time.Hour), Parents: []string{sha(3)}},
@@ -344,10 +346,14 @@ func TestLiveRefreshStartsTransition(t *testing.T) {
 	}
 	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 100, height: 30}
 
-	updated, _ := m.Update(snapshotMsg{snap: prev})
+	// A live poll re-reads the same state with a fresh capture timestamp; the
+	// model must treat that as unchanged and keep the current scene.
+	unchanged := prev
+	unchanged.Now = prev.Now.Add(time.Hour)
+	updated, _ := m.Update(snapshotMsg{snap: unchanged})
 	m = updated.(model)
 	if m.transiting {
-		t.Fatal("an unchanged snapshot replayed a transition")
+		t.Fatal("an unchanged poll with a fresh timestamp replayed a transition")
 	}
 
 	updated, cmd := m.Update(snapshotMsg{snap: next})

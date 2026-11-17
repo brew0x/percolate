@@ -97,6 +97,102 @@ func TestTransitionDripSettleFade(t *testing.T) {
 	}
 }
 
+// A run that is still running in the new snapshot keeps pulsing through the
+// whole transition; only a run completed by the new snapshot settles.
+func TestTransitionKeepsRunningRunPulsing(t *testing.T) {
+	snap := fixture(t, "small")
+	if snap.Runs[0].Status != "in_progress" {
+		t.Fatal("fixture setup changed")
+	}
+	for _, frame := range []int{0, 8, 16, 24, 31} {
+		m := markByID(t, scene.Transition(snap, snap, frame), "run:1")
+		if !m.Running || m.Glyph != '◌' {
+			t.Fatalf("still-running run froze at frame %d: %+v", frame, m)
+		}
+	}
+	// The drawn phase still advances in the second half of the transition.
+	a := scene.Frame(scene.Transition(snap, snap, 20), 20, 60, 20)
+	b := scene.Frame(scene.Transition(snap, snap, 28), 28, 60, 20)
+	if a.String() == b.String() {
+		t.Fatal("still-running run stopped pulsing mid-transition")
+	}
+}
+
+// The common case of a new newest commit (final rank 0) drips in from above
+// its lane rather than sitting motionless at rank 0 for every frame.
+func TestTransitionNewestCommitDrips(t *testing.T) {
+	prev, next := fixture(t, "newest"), fixture(t, "newest-next")
+	const newSHA = "0000000d0000000000000000000000000000000d"
+	first := markByID(t, scene.Transition(prev, next, 0), "commit:"+newSHA)
+	midway := markByID(t, scene.Transition(prev, next, 16), "commit:"+newSHA)
+	final := markByID(t, scene.Transition(prev, next, scene.TransitionFrames), "commit:"+newSHA)
+	if first.Rank >= 0 {
+		t.Fatalf("newest commit did not start above its lane: rank %d", first.Rank)
+	}
+	if midway.Rank <= first.Rank || final.Rank != 0 || final.Rank <= midway.Rank {
+		t.Fatalf("newest commit did not drip in: %d -> %d -> %d", first.Rank, midway.Rank, final.Rank)
+	}
+	linked := false
+	for _, link := range scene.Transition(prev, next, 0).Links {
+		if link.Child.ID == "commit:"+newSHA && link.Child.Rank == first.Rank {
+			linked = true
+		}
+	}
+	if !linked {
+		t.Fatal("newest commit's parent path stayed at its final row")
+	}
+}
+
+// When a branch and its PR/commits disappear together, fading marks stay on
+// that branch's lane instead of vanishing or landing on another branch.
+func TestTransitionFadeKeepsRemovedLane(t *testing.T) {
+	prev, next := fixture(t, "merged"), fixture(t, "merged-next")
+	nextBuilt := scene.Build(next)
+	if len(nextBuilt.Lanes) != 2 || nextBuilt.Lanes[0] != "main" || nextBuilt.Lanes[1] != "flow-02" {
+		t.Fatal("fixture setup changed")
+	}
+	s := scene.Transition(prev, next, 16)
+	kept := -1
+	for i, name := range s.Lanes {
+		if name == "flow-01" {
+			kept = i
+		}
+	}
+	if kept < 0 {
+		t.Fatalf("removed lane not retained for fade: %v", s.Lanes)
+	}
+	for _, id := range []string{
+		"commit:0000000200000000000000000000000000000002",
+		"pr:1",
+		"run:2",
+	} {
+		m := markByID(t, s, id)
+		if m.Style != scene.Faded {
+			t.Fatalf("%s did not fade", id)
+		}
+		if m.Lane != kept {
+			t.Fatalf("%s faded on lane %d, want retained flow-01 lane %d", id, m.Lane, kept)
+		}
+	}
+	settled := scene.Transition(prev, next, scene.TransitionFrames)
+	if !reflect.DeepEqual(settled.Lanes, nextBuilt.Lanes) {
+		t.Fatalf("removed lane lingered after the transition: %v", settled.Lanes)
+	}
+}
+
+// An unchanged in-progress run must keep its pulse value across the second
+// half; this pins the exact regression that the settle path froze it.
+func TestTransitionStillRunningMatchesBuildThroughout(t *testing.T) {
+	snap := fixture(t, "newest")
+	for _, frame := range []int{0, 15, 16, 23, 31} {
+		got := markByID(t, scene.Transition(snap, snap, frame), "run:1")
+		want := markByID(t, scene.Build(snap), "run:1")
+		if got.Running != want.Running || got.Glyph != want.Glyph || got.Style != want.Style {
+			t.Fatalf("frame %d differs from Build for still-running run: %+v vs %+v", frame, got, want)
+		}
+	}
+}
+
 func hasMark(s scene.Scene, id string) (scene.Mark, bool) {
 	for _, m := range s.Marks {
 		if m.ID == id {
@@ -110,22 +206,28 @@ func hasMark(s scene.Scene, id string) (scene.Mark, bool) {
 // the closed PR/issue fade. Frames past the transition must equal the static
 // Build(next) frame at the same index.
 func TestTransitionGolden(t *testing.T) {
-	prev, next := fixture(t, "small"), fixture(t, "small-next")
-	for _, frame := range []int{0, 8, 16, 24, 31, 32} {
-		key := fmt.Sprintf("transition-%02d", frame)
-		got := scene.Frame(scene.Transition(prev, next, frame), frame, 100, 30).String() + "\n"
-		path := filepath.Join("../../testdata/golden", key+".txt")
-		if *update {
-			if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+	for _, tc := range []struct{ prev, next, prefix string }{
+		{"small", "small-next", "transition"},
+		{"newest", "newest-next", "newest"},
+		{"merged", "merged-next", "merged"},
+	} {
+		prev, next := fixture(t, tc.prev), fixture(t, tc.next)
+		for _, frame := range []int{0, 8, 16, 24, 31, 32} {
+			key := fmt.Sprintf("%s-%02d", tc.prefix, frame)
+			got := scene.Frame(scene.Transition(prev, next, frame), frame, 100, 30).String() + "\n"
+			path := filepath.Join("../../testdata/golden", key+".txt")
+			if *update {
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
 				t.Fatal(err)
 			}
-		}
-		want, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != string(want) {
-			t.Fatalf("frame differs from %s; inspect before make golden", path)
+			if got != string(want) {
+				t.Fatalf("frame differs from %s; inspect before make golden", path)
+			}
 		}
 	}
 }

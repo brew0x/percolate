@@ -18,6 +18,12 @@ func TestEqual(t *testing.T) {
 	if !Equal(a, b) {
 		t.Fatal("identical snapshots compared unequal")
 	}
+	// A fresh capture timestamp is not repository state: a live poll stamps
+	// every read with a new Now, which must not count as a change.
+	b.Now = a.Now.Add(time.Hour)
+	if !Equal(a, b) {
+		t.Fatal("same state with a fresh capture timestamp compared unequal")
+	}
 	b.Branches[0].Name = "topic"
 	if Equal(a, b) {
 		t.Fatal("different snapshots compared equal")
@@ -68,6 +74,42 @@ func TestWatcherPollsAndSkipsUnchanged(t *testing.T) {
 	if _, open := <-errs; open {
 		t.Fatal("errors channel left open")
 	}
+}
+
+// The real fetch path stamps every successful read with a fresh Now, as
+// github.BuildSnapshot does. Watcher must still skip a poll whose recorded
+// state is unchanged, rather than emitting one snapshot per interval.
+func TestWatcherIgnoresFreshCaptureTimestamps(t *testing.T) {
+	base := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	changed := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}, {Name: "topic"}}}
+	calls := 0
+	fetch := func(context.Context) (repo.Snapshot, error) {
+		calls++
+		snap := base
+		if calls > 2 {
+			snap = changed
+		}
+		snap.Now = time.Now().UTC()
+		return snap, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	snaps, errs := make(chan repo.Snapshot), make(chan error)
+	done := make(chan error, 1)
+	go func() { done <- Watcher{Interval: 5 * time.Millisecond, Fetch: fetch}.Run(ctx, snaps, errs) }()
+
+	got := recvSnaps(t, snaps, 2)
+	if !Equal(got[0], base) || !Equal(got[1], changed) {
+		t.Fatalf("unexpected snapshot sequence: %+v", got)
+	}
+	// Several more polls have elapsed by now; none may have been replayed.
+	select {
+	case extra := <-snaps:
+		t.Fatalf("unchanged poll replayed a snapshot: %+v", extra)
+	case <-time.After(30 * time.Millisecond):
+	}
+	cancel()
+	<-done
 }
 
 func TestWatcherSurfacesErrorsAndKeepsPolling(t *testing.T) {

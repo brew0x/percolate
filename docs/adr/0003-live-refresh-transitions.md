@@ -22,7 +22,10 @@ function of its three arguments, clamping outside `[0, TransitionFrames)` and
 equalling `Build(next)` at the last frame. It bakes drip, settle, and fade into
 concrete mark and link values so `Frame` needs no animation branches. The TUI
 schedules ticks and polls; it owns which two snapshots bracket a transition,
-but passes no clock to either renderer.
+but passes no clock to either renderer. Change detection (`live.Equal`)
+compares recorded repository state and ignores `Snapshot.Now`: a fresh capture
+timestamp from `BuildSnapshot` is metadata about when a read happened, not a
+change to what was read, so an unchanged poll never starts a transition.
 
 ## Consequences
 A recorded pair of snapshots plus a frame index reproduces any in-between

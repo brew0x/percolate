@@ -44,3 +44,17 @@ explicit changes: one new commit (`...0d`) on `main`, workflow run 1 finished
 the open-PR window, and a closed issue draws no spring). It is fiction derived
 from a checked-in fixture, not data fetched from any repository; no private
 data is involved.
+
+## `newest.json`, `newest-next.json` — fictional newest-commit pair
+
+`newest-next.json` adds one new latest commit (`...0d`) to `newest.json` and
+leaves workflow run 1 in progress. It exercises the common case the `small` pair
+misses: a new commit whose final rank is zero, and an unchanged running run that
+must keep pulsing. Fiction derived from a checked-in fixture; no private data.
+
+## `merged.json`, `merged-next.json` — fictional removed-lane pair
+
+`merged.json` is a copy of `small.json`. `merged-next.json` removes the
+`flow-01` branch, all of its commits, its pull request and its workflow run, so
+the objects that fade in the transition belonged to a lane the new snapshot no
+longer has. Fiction derived from a checked-in fixture; no private data.

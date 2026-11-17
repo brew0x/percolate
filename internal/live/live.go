@@ -25,9 +25,15 @@ const Interval = 60 * time.Second
 // internal/github; the CLI supplies a Fetcher that calls it.
 type Fetcher func(context.Context) (repo.Snapshot, error)
 
-// Equal reports whether two snapshots carry identical recorded state. A poll
-// that returns unchanged data must not replay a transition.
+// Equal reports whether two snapshots carry identical recorded state. Now is
+// the time a snapshot was captured, not repository state: every successful
+// BuildSnapshot stamps a fresh Now, so including it would make every unchanged
+// poll look like a change and replay its transition. Comparing the rest keeps
+// the ADR 0003 promise that unchanged polls do not replay. Callers pass by
+// value, so clearing Now here cannot change either snapshot.
 func Equal(a, b repo.Snapshot) bool {
+	a.Now = time.Time{}
+	b.Now = time.Time{}
 	aj, _ := json.Marshal(a)
 	bj, _ := json.Marshal(b)
 	return string(aj) == string(bj)
