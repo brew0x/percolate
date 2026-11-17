@@ -137,6 +137,8 @@ func Build(s repo.Snapshot) Scene {
 		}
 		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: fmt.Sprintf("#%d %s → %s · %s · %s", p.Number, p.Head, p.Base, p.State, strings.Join(reviews, ", ")), Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Style: Fresh})
 	}
+	// Issues follow PRs so a closing reference resolves to the same head lane.
+	out.Marks = append(out.Marks, buildIssues(s, addLane)...)
 	for _, r := range s.Runs {
 		anchor, ok := bySHA[r.HeadSHA]
 		if !ok {
@@ -314,6 +316,9 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		put(c.x, c.y, glyph, style)
 	}
 	draw := func(m Mark, selected bool) {
+		if m.Kind == "issue" {
+			return // springs and closing-reference feeds are drawn by drawIssues
+		}
 		if !visible(m.Lane) {
 			return
 		}
@@ -369,5 +374,6 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			draw(m, true)
 		}
 	}
+	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, span: span, xpos: xpos, visible: visible})
 	return g
 }

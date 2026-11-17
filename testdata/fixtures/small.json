@@ -117,6 +117,20 @@
       "time": "2026-01-20T11:00:00Z"
     }
   ],
+  "issues": [
+    {
+      "number": 2,
+      "title": "issue 2",
+      "state": "open",
+      "closed_by": 1
+    },
+    {
+      "number": 3,
+      "title": "issue 3",
+      "state": "open",
+      "closed_by": 0
+    }
+  ],
   "pull_requests": [
     {
       "number": 1,

@@ -17,6 +17,16 @@ type Review struct {
 	Author string `json:"author"`
 	State  string `json:"state"`
 }
+type Issue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	// ClosedBy is the pull request whose recorded closing reference names
+	// this issue (the "closes #n" reference on that pull request). Zero means
+	// the snapshot has no closing reference for it. The link is recorded by
+	// the snapshot source; the scene never infers one from text or numbering.
+	ClosedBy int `json:"closed_by"`
+}
 type PullRequest struct {
 	Number  int      `json:"number"`
 	Head    string   `json:"head"`
@@ -51,6 +61,7 @@ type Snapshot struct {
 	Now          time.Time     `json:"now"`
 	Branches     []Branch      `json:"branches"`
 	Commits      []Commit      `json:"commits"`
+	Issues       []Issue       `json:"issues"`
 	PullRequests []PullRequest `json:"pull_requests"`
 	Runs         []WorkflowRun `json:"runs"`
 	Releases     []Release     `json:"releases"`

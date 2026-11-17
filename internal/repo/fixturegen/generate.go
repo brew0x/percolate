@@ -59,6 +59,26 @@ func Generate(seed int64, branches, commits, prs, runs int) repo.Snapshot {
 		}
 		s.PullRequests = append(s.PullRequests, repo.PullRequest{Number: i + 1, Head: s.Branches[head].Name, Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}})
 	}
+	// Keep the first pull request on a lane visible at the default viewport so
+	// replay frames exercise a linked spring feeding its flow even in a busy
+	// landscape whose other heads land far to the right.
+	if len(s.PullRequests) > 0 && len(s.Branches) > 1 {
+		s.PullRequests[0].Head = s.Branches[1].Name
+	}
+	// A few fictional open issues so replay frames show both kinds of spring.
+	// Every other issue carries a recorded closing reference to a pull request
+	// that exists in this snapshot; the rest stay unlinked. Kept short so a
+	// busy landscape stays calm.
+	for i := 0; i < min(prs+1, 6); i++ {
+		// GitHub numbers issues and pull requests from one sequence, so an
+		// issue never shares a number with a pull request in the same repo.
+		number := prs + i + 1
+		issue := repo.Issue{Number: number, Title: fmt.Sprintf("issue %d", number), State: "open"}
+		if i%2 == 0 && i/2 < prs {
+			issue.ClosedBy = 2*(i/2) + 1
+		}
+		s.Issues = append(s.Issues, issue)
+	}
 	for i := 0; i < runs && commits > 0; i++ {
 		status, conclusion := "completed", "success"
 		if i%7 == 0 {
