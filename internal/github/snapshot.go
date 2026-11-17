@@ -34,19 +34,24 @@ type SnapshotOptions struct {
 	MaxDeployments  int
 }
 
-// DefaultSnapshotOptions plans a full read of repositories up to 500 open
-// pull requests, far under the 300-request budget promised for #3.
+// DefaultSnapshotOptions bounds one read to recent history: up to 1000 open
+// pull requests, 5000 default-branch commits, 5000 workflow runs and 1000 of
+// each other list. These are generous enough for an active repository; a read
+// that still exceeds one is a clear error, never a partial snapshot. The worst
+// case is 187 requests, under the 250-request budget (and the 300-request
+// budget promised for #3); a short collection costs fewer because each list
+// stops at its first short page. The limits hold for owner/repo in README.md.
 func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 	return SnapshotOptions{
 		Owner:           owner,
 		Repo:            name,
 		MaxRequests:     250,
-		MaxBranches:     5 * pageSize,
-		MaxCommits:      5 * pageSize,
-		MaxPullRequests: 5 * pageSize,
-		MaxRuns:         5 * pageSize,
-		MaxReleases:     2 * pageSize,
-		MaxDeployments:  2 * pageSize,
+		MaxBranches:     10 * pageSize,
+		MaxCommits:      50 * pageSize,
+		MaxPullRequests: 10 * pageSize,
+		MaxRuns:         50 * pageSize,
+		MaxReleases:     10 * pageSize,
+		MaxDeployments:  10 * pageSize,
 	}
 }
 
@@ -333,8 +338,9 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 }
 
 // fetchPullDetails fills per-PR review state and head-commit anchors through
-// batched aliased GraphQL queries. Each PR records at most 10 reviews and its
-// head commit at most 3 parents; anything beyond those caps is absent from
+// batched aliased GraphQL queries. Each PR records at most the 10 most recent
+// reviews (reviews(last:10), the tail of GitHub's oldest-first connection) and
+// its head commit at most 3 parents; anything beyond those caps is absent from
 // the snapshot, and the caps are stated here and in the package README until
 // per-PR pagination reads the remainder. A PR that vanishes between list and
 // detail keeps its lane but gains no reviews; the whole call fails on server
@@ -351,7 +357,7 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 		for i, p := range chunk {
 			fmt.Fprintf(&q, "p%d:pullRequest(number:%d){number headRefOid headRefName baseRefName"+
 				" headRef{target{oid ... on Commit{oid committedDate author{name} parents(first:3){nodes{oid}}}}}"+
-				" reviews(first:10){nodes{author{login} state}}}", i, p.Number)
+				" reviews(last:10){nodes{author{login} state}}}", i, p.Number)
 		}
 		q.WriteString("}}")
 		data, err := c.GraphQL(ctx, q.String(), map[string]any{"owner": opts.Owner, "name": opts.Repo})

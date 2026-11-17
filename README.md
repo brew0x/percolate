@@ -83,6 +83,18 @@ to identical frames. Without arguments, Percolate prints a hint and exits with
 status 2; a fetch without any token fails with one line telling you where to
 get one. Color is optional in render mode; use a Unicode-capable terminal font.
 
+### Read limits
+
+A live read is a bounded window of recent history, not a repository's entire
+lifetime: at most 5000 default-branch commits, 5000 workflow runs, 1000 open
+pull requests and 1000 branches, releases and deployments each. These fit an
+active repository. If a list still exceeds its limit, Percolate stops with one
+clear line rather than drawing a partial landscape that pretends to be the
+whole repository; it never shows truncated history as if it were complete.
+The worst case is under 250 API requests. `PERCOLATE_GITHUB_URL` may point at a
+different GitHub host over https; plain http is accepted only on loopback,
+because every request carries your token.
+
 ## Development
 
 ```sh

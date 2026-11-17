@@ -156,6 +156,42 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	}
 }
 
+// An active repository with more than the old 500-item commit and run caps is
+// an ordinary case, not an error: the raised default limits let it render.
+func TestBuildSnapshotAboveOldCaps(t *testing.T) {
+	const many = 600 // above the old 500 cap, below the new 5000 cap
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		switch {
+		case r.URL.Path == "/repos/acme/widgets":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			_, _ = w.Write([]byte(`[{"name":"main"}]`))
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			_, _ = w.Write([]byte(pageString(page, many, commitItem)))
+		case strings.HasSuffix(r.URL.Path, "/pulls"):
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":%s}`, many, pageString(page, many, runItem))
+		case strings.HasSuffix(r.URL.Path, "/releases"), strings.HasSuffix(r.URL.Path, "/deployments"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+	if err != nil {
+		t.Fatalf("ordinary active repository rejected: %v", err)
+	}
+	if len(snap.Commits) != many || len(snap.Runs) != many {
+		t.Fatalf("counts: %d commits, %d runs, want %d each", len(snap.Commits), len(snap.Runs), many)
+	}
+}
+
 func TestBuildSnapshotFailsClean(t *testing.T) {
 	for _, mode := range []string{"runs", "graphql", "branches", "format"} {
 		t.Run(mode, func(t *testing.T) {
@@ -176,7 +212,8 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 					}
 				case "branches":
 					if strings.HasSuffix(r.URL.Path, "/branches") {
-						// Six full pages exceed the branch cap of six reads.
+						// Every page is full, so the page budget runs out
+						// before a short page can confirm the end.
 						_, _ = w.Write([]byte(pageString(1, 100, func(i int) string { return `{"name":"b"}` })))
 						return
 					}
@@ -206,17 +243,20 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 // Every list enforces its item cap: whatever its page budget allows, more
 // items than the cap is an error, and no partial snapshot is returned.
 func TestBuildSnapshotItemCaps(t *testing.T) {
+	// Derive each cap from the defaults so this still guards the real limits
+	// when they are raised, instead of silently testing stale numbers.
+	opts := DefaultSnapshotOptions("acme", "widgets")
 	for _, tt := range []struct {
 		path, probe string
 		cap         int
 		item        func(int) string
 	}{
-		{"/branches", "branch", 5 * pageSize, branchItem},
-		{"/commits", "commit", 5 * pageSize, commitItem},
-		{"/pulls", "pull request", 5 * pageSize, pullItem},
-		{"/actions/runs", "run", 5 * pageSize, runItem},
-		{"/releases", "release", 2 * pageSize, releaseItem},
-		{"/deployments", "deployment", 2 * pageSize, deploymentItem},
+		{"/branches", "branch", opts.MaxBranches, branchItem},
+		{"/commits", "commit", opts.MaxCommits, commitItem},
+		{"/pulls", "pull request", opts.MaxPullRequests, pullItem},
+		{"/actions/runs", "run", opts.MaxRuns, runItem},
+		{"/releases", "release", opts.MaxReleases, releaseItem},
+		{"/deployments", "deployment", opts.MaxDeployments, deploymentItem},
 	} {
 		t.Run(strings.Trim(tt.path, "/"), func(t *testing.T) {
 			server, _ := fakeRepo(t, 5)
@@ -247,6 +287,19 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 				t.Fatal("partial snapshot returned")
 			}
 		})
+	}
+}
+
+// Keep the worst-case request count in the docs checkable: 1 meta + 11 branch
+// + 51 commit + 11 pull + 51 run + 11 release + 11 deployment pages + 40
+// detail queries, all inside the 250-request budget.
+func TestDefaultPlannedRequests(t *testing.T) {
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	if got := opts.plannedRequests(); got != 187 {
+		t.Fatalf("plannedRequests()=%d, want the documented 187", got)
+	}
+	if 187 > opts.MaxRequests {
+		t.Fatal("documented plan exceeds the default request budget")
 	}
 }
 

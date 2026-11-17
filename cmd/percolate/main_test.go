@@ -26,7 +26,7 @@ func TestCLI(t *testing.T) {
 		args     []string
 		code     int
 		contains string
-	}{{"hint", nil, 2, "--fixture"}, {"version", []string{"version"}, 0, "0.1.0"}, {"render", []string{"render", "--fixture", "../../testdata/fixtures/small.json", "--frame", "7", "--size", "100x30", "--color=false"}, 0, "●"}, {"bad size", []string{"render", "--fixture", "x", "--size", "-1x2"}, 2, "size"}, {"missing", []string{"--fixture", "missing.json"}, 1, "missing.json"}} {
+	}{{"hint", nil, 2, "--fixture"}, {"version", []string{"version"}, 0, "0.1.0"}, {"render", []string{"render", "--fixture", "../../testdata/fixtures/small.json", "--frame", "7", "--size", "100x30", "--color=false"}, 0, "●"}, {"bad size", []string{"render", "--fixture", "x", "--size", "-1x2"}, 2, "size"}, {"fixture with repo", []string{"--fixture", "../../testdata/fixtures/small.json", "acme/widgets"}, 2, "remove the repository argument"}, {"missing", []string{"--fixture", "missing.json"}, 1, "missing.json"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, err bytes.Buffer
 			code := run(tt.args, &out, &err)

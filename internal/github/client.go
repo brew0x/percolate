@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -70,12 +71,33 @@ func NewClient(token string) (*Client, error) {
 	if base == "" {
 		base = "https://api.github.com"
 	}
-	if u, err := url.Parse(base); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, errors.New("PERCOLATE_GITHUB_URL must be an absolute http(s) URL")
+	if !allowedBaseURL(base) {
+		return nil, errors.New("PERCOLATE_GITHUB_URL must be https, or http on loopback for local testing")
 	}
 	return &Client{token: token, http: &http.Client{Timeout: 30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		baseURL: base, pages: make(map[string]cachedPage)}, nil
+}
+
+// allowedBaseURL accepts https everywhere and plain http only on loopback.
+// Every request carries a bearer token, so a mis-set http override must not
+// send it in cleartext; loopback http exists for the local httptest servers.
+func allowedBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	if strings.EqualFold(u.Hostname(), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
 }
 
 // Requests counts every HTTP request issued so far, REST and GraphQL

@@ -41,4 +41,6 @@ commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
 Details report only recorded fields: a run without a recorded job list says
 `jobs not recorded` rather than a numeric zero, and a deployment without a
-recorded state leaves it blank.
+recorded state leaves it blank. A pull request shows at most the ten most
+recent recorded reviews; older reviews are not present in the snapshot, so the
+list is never a claim about the full review history.

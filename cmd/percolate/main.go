@@ -45,6 +45,10 @@ func run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, "unexpected argument")
 		return 2
 	}
+	if *fixture != "" && fs.NArg() > 0 {
+		fmt.Fprintln(errout, "--fixture replays a recording; remove the repository argument")
+		return 2
+	}
 	if *record != "" && *fixture != "" {
 		fmt.Fprintln(errout, "use either --fixture to replay a recording, or owner/repo with --record")
 		return 2
