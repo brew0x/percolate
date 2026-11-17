@@ -17,6 +17,11 @@
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
 
+Only published releases enter the snapshot: a draft was never published and
+draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
+(for example `alice:main`), so its commit never joins the upstream lane of the
+same branch name.
+
 CI sits two columns right of its commit. Releases or runs whose SHA is absent
 use an explicit `unlinked` lane. Commit and PR paths use separate vertical
 regions; releases collect at the bottom. Branch names and object labels truncate
@@ -39,3 +44,8 @@ Lanes occupy only recorded commit paths, rather than full-height columns. A
 merged lane ends at its merge path; no merge is inferred from PR state. A newer
 commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
+Details report only recorded fields: a run without a recorded job list says
+`jobs not recorded` rather than a numeric zero, and a deployment without a
+recorded state leaves it blank. A pull request shows at most the ten most
+recent recorded reviews; older reviews are not present in the snapshot, so the
+list is never a claim about the full review history.

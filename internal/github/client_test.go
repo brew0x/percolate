@@ -42,6 +42,33 @@ func TestResolveToken(t *testing.T) {
 	}
 }
 
+// A bearer token rides on every request, so only https or loopback http may
+// override the API host; a mis-set plain-http host must not leak the token.
+func TestNewClientBaseURL(t *testing.T) {
+	for _, tt := range []struct {
+		url  string
+		want bool
+	}{
+		{"https://api.github.com", true},
+		{"http://127.0.0.1:8080", true},
+		{"http://localhost:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://example.com", false},
+		{"http://10.0.0.5", false},
+		{"ftp://example.com", false},
+		{"https://", false},
+		{"not a url", false},
+	} {
+		t.Run(tt.url, func(t *testing.T) {
+			t.Setenv("PERCOLATE_GITHUB_URL", tt.url)
+			_, err := NewClient("test-token")
+			if (err == nil) != tt.want {
+				t.Fatalf("url %q: err %v, want accepted=%t", tt.url, err, tt.want)
+			}
+		})
+	}
+}
+
 func TestConditionalPages(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

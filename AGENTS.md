@@ -4,6 +4,8 @@ Read VISION.md first. Preserve truth, reproducibility and calm at scale.
 
 ## Layout
 - internal/repo: JSON snapshot structs; no terminal or network dependencies.
+- internal/github: token resolution, REST/GraphQL transport, bounded snapshot
+  assembly; the only network boundary, and it never draws a scene.
 - internal/repo/fixturegen: seeded fictional data; `go generate ./internal/repo/fixturegen` regenerates checked-in fixtures.
 - internal/scene: pure Build and Frame, object identities and cell styles.
 - cmd/percolate: flags, terminal lifecycle, selection, details, color output.
@@ -19,4 +21,6 @@ Add a mark in this order: model → scene → visual-language doc → golden.
 Keep PRs small. Do not read the wall clock in models or rendering, and never use
 randomness outside explicit seeds. Terminal scheduling may use Bubble Tea ticks;
 rendering must use only the frame index. Never commit real private repo data.
-No live GitHub fetching in this slice. Keep future adapters on the snapshot path.
+Live fetching exists only in internal/github and always lands as a snapshot;
+rendering stays pure over snapshots. Only record public repositories into
+testdata/fixtures/recorded-*.json, with provenance noted.

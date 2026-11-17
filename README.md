@@ -2,7 +2,8 @@
 
 A living landscape of a repository's development lifecycle, inside your terminal.
 Branches flow downward; commits, reviews and CI meet on the way to releases.
-This first slice plays fictional recorded snapshots; live GitHub data comes later.
+`percolate owner/repo` fetches a live snapshot from GitHub; any snapshot can be
+recorded to a file and replayed identically.
 
 ```text
   PERCOLATE  1–3/3
@@ -47,11 +48,32 @@ go install github.com/brew0x/percolate/cmd/percolate@latest
 
 ## Usage
 
-From a checkout, open a recorded landscape:
+Watch a real repository (token from `GITHUB_TOKEN` or `gh auth login`):
+
+```sh
+percolate brew0x/percolate
+```
+
+Record what you saw, then replay any view of it exactly, offline:
+
+```sh
+percolate brew0x/percolate --record snapshot.json
+percolate --fixture snapshot.json
+```
+
+From a checkout, open the bundled fictional landscapes:
 
 ```sh
 percolate --fixture testdata/fixtures/small.json
 percolate --fixture testdata/fixtures/busy.json
+```
+
+There is also a real public recording, captured from an unauthenticated read of
+`hivemq/hivemq-hello-world-datahub-module` (provenance in
+`testdata/fixtures/README.md`). Replay it exactly, offline:
+
+```sh
+percolate --fixture testdata/fixtures/recorded-hivemq.json
 ```
 
 Press arrows or tab to select a mark, enter for details, escape to close details,
@@ -64,8 +86,24 @@ percolate render --fixture testdata/fixtures/small.json --frame 7 --size 100x30 
 percolate version
 ```
 
-Without a fixture, Percolate prints a hint and exits with status 2. Color is
-optional in render mode; use a Unicode-capable terminal font.
+`render` works with a repository too, for example to prove a recording replays
+to identical frames. Without arguments, Percolate prints a hint and exits with
+status 2; a fetch without any token fails with one line telling you where to
+get one. Color is optional in render mode; use a Unicode-capable terminal font.
+
+### Read limits
+
+A live read is a bounded window of recent history, not a repository's entire
+lifetime: at most 5000 default-branch commits, 5000 workflow runs, 1000 open
+pull requests and 1000 branches, releases and deployments each. These fit an
+active repository. If a list still exceeds its limit, Percolate stops with one
+clear line rather than drawing a partial landscape that pretends to be the
+whole repository; it never shows truncated history as if it were complete.
+Fork pull requests use their fork-qualified head label as a lane, so a fork's
+`main` is never confused with the upstream `main`; unpublished draft releases
+are not shown. The worst case is under 250 API requests.
+`PERCOLATE_GITHUB_URL` may point at a different GitHub host over https; plain
+http is accepted only on loopback, because every request carries your token.
 
 ## Development
 

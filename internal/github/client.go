@@ -1,5 +1,6 @@
-// Package github contains the network boundary for future snapshot adapters.
-// It does not fetch data until explicitly called, and never draws a scene.
+// Package github is Percolate's only network boundary. It fetches a
+// repository on explicit call and assembles repo.Snapshot from REST lists
+// plus batched GraphQL pull-request details; it never draws a scene.
 package github
 
 import (
@@ -8,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,15 +50,16 @@ type cachedPage struct {
 	body []byte
 }
 
-// Client caches individual REST list pages in memory. It is safe for concurrent
-// calls; ListAll provides bounded pagination, while callers own snapshot assembly. Credentials and cached
-// responses are never written to disk.
+// Client caches individual REST list pages in memory. It is safe for
+// concurrent calls; ListAll provides bounded pagination and BuildSnapshot
+// owns assembly. Credentials and cached responses are never written to disk.
 type Client struct {
-	token   string
-	http    *http.Client
-	baseURL string
-	mu      sync.Mutex
-	pages   map[string]cachedPage
+	token    string
+	http     *http.Client
+	baseURL  string
+	mu       sync.Mutex
+	pages    map[string]cachedPage
+	requests int
 }
 
 func NewClient(token string) (*Client, error) {
@@ -63,9 +67,66 @@ func NewClient(token string) (*Client, error) {
 	if token == "" {
 		return nil, ErrNoToken
 	}
+	base := strings.TrimRight(os.Getenv("PERCOLATE_GITHUB_URL"), "/")
+	if base == "" {
+		base = "https://api.github.com"
+	}
+	if !allowedBaseURL(base) {
+		return nil, errors.New("PERCOLATE_GITHUB_URL must be https, or http on loopback for local testing")
+	}
 	return &Client{token: token, http: &http.Client{Timeout: 30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		baseURL: "https://api.github.com", pages: make(map[string]cachedPage)}, nil
+		baseURL: base, pages: make(map[string]cachedPage)}, nil
+}
+
+// allowedBaseURL accepts https everywhere and plain http only on loopback.
+// Every request carries a bearer token, so a mis-set http override must not
+// send it in cleartext; loopback http exists for the local httptest servers.
+func allowedBaseURL(base string) bool {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	if strings.EqualFold(u.Hostname(), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
+}
+
+// Requests counts every HTTP request issued so far, REST and GraphQL
+// combined. Callers use it to hold a read inside its request budget.
+func (c *Client) Requests() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.requests
+}
+
+// responseError turns a non-200 status into one safe line. Rate-limit
+// responses report when to come back; response bodies never appear.
+func responseError(resp *http.Response, kind string) error {
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
+				wait := time.Until(time.Unix(reset, 0)).Round(time.Second)
+				if wait < 0 {
+					wait = 0
+				}
+				return fmt.Errorf("GitHub rate limit exhausted; resets in %s", wait)
+			}
+			return errors.New("GitHub rate limit exhausted")
+		}
+		if retry, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && retry > 0 {
+			return fmt.Errorf("GitHub rate limited; retry after %s", (time.Duration(retry) * time.Second).Round(time.Second))
+		}
+	}
+	return fmt.Errorf("GitHub %s returned HTTP %d", kind, resp.StatusCode)
 }
 
 // ListPage returns JSON from a relative REST path, including its query. Repeat
@@ -94,6 +155,7 @@ func (c *Client) ListPage(ctx context.Context, path string) (json.RawMessage, er
 		return nil, errors.New("GitHub REST request failed")
 	}
 	defer resp.Body.Close()
+	c.requests++
 	if resp.StatusCode == http.StatusNotModified {
 		if cached.etag == "" {
 			return nil, errors.New("GitHub returned 304 without a cached page")
@@ -101,7 +163,7 @@ func (c *Client) ListPage(ctx context.Context, path string) (json.RawMessage, er
 		return append(json.RawMessage(nil), cached.body...), nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub REST returned HTTP %d", resp.StatusCode)
+		return nil, responseError(resp, "REST")
 	}
 	const limit = 16 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

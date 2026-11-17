@@ -3,10 +3,12 @@ package main
 import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/brew0x/percolate/internal/github"
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 	"image/color"
@@ -31,19 +33,28 @@ func run(args []string, out, errout io.Writer) int {
 	}
 	fs := flag.NewFlagSet("percolate", flag.ContinueOnError)
 	fs.SetOutput(errout)
-	fixture := fs.String("fixture", "", "recorded snapshot JSON")
+	fixture := fs.String("fixture", "", "recorded snapshot JSON to replay")
+	record := fs.String("record", "", "save a fetched snapshot to this JSON file for exact replay")
 	frame := fs.Int("frame", 0, "animation frame")
 	size := fs.String("size", "100x30", "terminal columns x rows")
 	colored := fs.Bool("color", true, "ANSI colors")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args)); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 {
+	if fs.NArg() > 1 {
 		fmt.Fprintln(errout, "unexpected argument")
 		return 2
 	}
-	if *fixture == "" {
-		fmt.Fprintln(errout, "Use percolate --fixture <snapshot.json> to open a recorded landscape.")
+	if *fixture != "" && fs.NArg() > 0 {
+		fmt.Fprintln(errout, "--fixture replays a recording; remove the repository argument")
+		return 2
+	}
+	if *record != "" && *fixture != "" {
+		fmt.Fprintln(errout, "use either --fixture to replay a recording, or owner/repo with --record")
+		return 2
+	}
+	if *fixture == "" && *record == "" && fs.NArg() == 0 {
+		fmt.Fprintln(errout, "Use percolate owner/repo to watch GitHub, or percolate --fixture snapshot.json to replay a recording.")
 		return 2
 	}
 	w, h, err := parseSize(*size)
@@ -51,15 +62,26 @@ func run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(errout, err)
 		return 2
 	}
-	data, err := os.ReadFile(*fixture)
-	if err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
-	}
 	var snapshot repo.Snapshot
-	if err = json.Unmarshal(data, &snapshot); err != nil {
-		fmt.Fprintln(errout, err)
-		return 1
+	if *fixture != "" {
+		data, err := os.ReadFile(*fixture)
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+		if err = json.Unmarshal(data, &snapshot); err != nil {
+			fmt.Fprintln(errout, err)
+			return 1
+		}
+	} else {
+		snapshot, err = watch(context.Background(), *record, fs.Args())
+		if err != nil {
+			fmt.Fprintln(errout, err)
+			if errors.As(err, new(usageError)) {
+				return 2
+			}
+			return 1
+		}
 	}
 	s := scene.Build(snapshot)
 	if render {
@@ -81,6 +103,73 @@ func parseSize(s string) (int, int, error) {
 		return 0, 0, errors.New("size must be WxH, each between 1 and 1000")
 	}
 	return w, h, nil
+}
+
+// usageError marks mistakes in command-line shape, exiting 2 like flag.Parse.
+type usageError struct{ error }
+
+// valueFlags consume a following token, which lets reorderArgs tell flag
+// values apart from the owner/repo positional. Keep this in sync with the
+// flag set above.
+var valueFlags = map[string]bool{"fixture": true, "record": true, "size": true, "frame": true}
+
+// reorderArgs moves non-flag tokens behind the flags, because flag.Parse
+// stops at the first one; `percolate owner/repo --record x` must work as
+// written, not only as `percolate --record x owner/repo`. Multiple positionals
+// keep their relative order at the end, where run() counts them.
+func reorderArgs(args []string) []string {
+	var positional, rest []string
+	takeValue := false
+	for _, a := range args {
+		if takeValue {
+			rest, takeValue = append(rest, a), false
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			rest = append(rest, a)
+			name := strings.TrimLeft(a, "-")
+			if eq := strings.Index(name, "="); eq < 0 && valueFlags[name] {
+				takeValue = true
+			}
+			continue
+		}
+		positional = append(positional, a)
+	}
+	return append(rest, positional...)
+}
+
+// watch fetches a live snapshot for owner/repo and, when a path is given,
+// records the exact JSON so any later view can replay it identically.
+func watch(ctx context.Context, recordPath string, args []string) (repo.Snapshot, error) {
+	if len(args) != 1 {
+		return repo.Snapshot{}, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
+	}
+	owner, name, ok := strings.Cut(args[0], "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return repo.Snapshot{}, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
+	}
+	token, err := github.ResolveToken(ctx)
+	if err != nil {
+		return repo.Snapshot{}, err
+	}
+	client, err := github.NewClient(token)
+	if err != nil {
+		return repo.Snapshot{}, err
+	}
+	snapshot, err := client.BuildSnapshot(ctx, github.DefaultSnapshotOptions(owner, name))
+	if err != nil {
+		return repo.Snapshot{}, err
+	}
+	if recordPath != "" {
+		data, err := json.MarshalIndent(snapshot, "", "  ")
+		if err != nil {
+			return repo.Snapshot{}, err
+		}
+		if err := os.WriteFile(recordPath, append(data, '\n'), 0o600); err != nil {
+			return repo.Snapshot{}, err
+		}
+	}
+	return snapshot, nil
 }
 
 var palette = []color.Color{lipgloss.Color("#d5ddd9"), lipgloss.Color("#374b4b"), lipgloss.Color("#80d9c0"), lipgloss.Color("#586b70"), lipgloss.Color("#a0dc80"), lipgloss.Color("#f08382"), lipgloss.Color("#f4cf83"), lipgloss.Color("#e5b8ef"), lipgloss.Color("#ffffff")}
