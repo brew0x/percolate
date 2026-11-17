@@ -14,6 +14,33 @@ import (
 
 func sha(i int) string { return fmt.Sprintf("%040x", i) }
 
+func branchItem(i int) string { return fmt.Sprintf(`{"name":"branch-%d"}`, i) }
+
+func commitItem(i int) string {
+	parent := ""
+	if i > 1 {
+		parent = fmt.Sprintf(`,"parents":[{"sha":"%s"}]`, sha(i-1))
+	}
+	return fmt.Sprintf(`{"sha":"%s"%s,"commit":{"author":{"name":"robin","date":"2026-01-01T00:00:%02dZ"}}}`,
+		sha(i), parent, i%60)
+}
+
+func pullItem(i int) string {
+	return fmt.Sprintf(`{"number":%d,"state":"open","head":{"ref":"flow-%d"},"base":{"ref":"main"}}`, i, i)
+}
+
+func runItem(i int) string {
+	return fmt.Sprintf(`{"id":%d,"head_sha":"%s","status":"completed","conclusion":"success"}`, i, sha(i))
+}
+
+func releaseItem(i int) string {
+	return fmt.Sprintf(`{"tag_name":"v%d","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z"}`, i, sha(i))
+}
+
+func deploymentItem(i int) string {
+	return fmt.Sprintf(`{"id":%d,"sha":"%s","environment":"prod"}`, i, sha(i))
+}
+
 // fakeRepo answers every REST and GraphQL read for a repository with prs open
 // pull requests and returns the number of HTTP requests it received.
 func fakeRepo(t *testing.T, prs int) (*httptest.Server, *int) {
@@ -27,42 +54,21 @@ func fakeRepo(t *testing.T, prs int) (*httptest.Server, *int) {
 		case r.URL.Path == "/repos/acme/widgets":
 			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
 		case r.URL.Path == "/repos/acme/widgets/branches":
-			_, _ = w.Write([]byte(pageString(page, prs, func(i int) string {
-				return fmt.Sprintf(`{"name":"branch-%d"}`, i)
-			})))
+			_, _ = w.Write([]byte(pageString(page, prs, branchItem)))
 		case r.URL.Path == "/repos/acme/widgets/commits":
-			_, _ = w.Write([]byte(pageString(page, prs, func(i int) string {
-				parent := ""
-				if i > 1 {
-					parent = fmt.Sprintf(`,"parents":[{"sha":"%s"}]`, sha(i-1))
-				}
-				return fmt.Sprintf(`{"sha":"%s"%s,"commit":{"author":{"name":"robin","date":"2026-01-01T00:00:%02dZ"}}}`,
-					sha(i), parent, i%60)
-			})))
+			_, _ = w.Write([]byte(pageString(page, prs, commitItem)))
 		case r.URL.Path == "/repos/acme/widgets/pulls":
 			if r.URL.Query().Get("state") != "open" {
 				t.Errorf("lost pull request filter: %s", r.URL.RawQuery)
 			}
-			_, _ = w.Write([]byte(pageString(page, prs, func(i int) string {
-				return fmt.Sprintf(`{"number":%d,"state":"open","head":{"ref":"flow-%d"},"base":{"ref":"main"}}`, i, i)
-			})))
+			_, _ = w.Write([]byte(pageString(page, prs, pullItem)))
 		case r.URL.Path == "/repos/acme/widgets/actions/runs":
-			var obj struct {
-				WorkflowRuns []string `json:"-"`
-			}
-			_ = obj
-			items := pageList(page, prs, func(i int) string {
-				return fmt.Sprintf(`{"id":%d,"head_sha":"%s","status":"completed","conclusion":"success"}`, i, sha(i))
-			})
+			items := pageList(page, prs, runItem)
 			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":[%s]}`, prs, strings.Join(items, ","))
 		case r.URL.Path == "/repos/acme/widgets/releases":
-			_, _ = w.Write([]byte(pageString(page, 150, func(i int) string {
-				return fmt.Sprintf(`{"tag_name":"v%d","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z"}`, i, sha(i))
-			})))
+			_, _ = w.Write([]byte(pageString(page, 150, releaseItem)))
 		case r.URL.Path == "/repos/acme/widgets/deployments":
-			_, _ = w.Write([]byte(pageString(page, 100, func(i int) string {
-				return fmt.Sprintf(`{"id":%d,"sha":"%s","environment":"prod"}`, i, sha(i))
-			})))
+			_, _ = w.Write([]byte(pageString(page, 100, deploymentItem)))
 		case r.URL.Path == "/graphql":
 			var payload struct {
 				Query     string `json:"query"`
@@ -73,7 +79,7 @@ func fakeRepo(t *testing.T, prs int) (*httptest.Server, *int) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&payload)
 			if payload.Variables.Owner != "acme" || payload.Variables.Name != "widgets" {
-				t.Errorf("lost variables: %s", payload.Variables)
+				t.Errorf("lost variables: %+v", payload.Variables)
 			}
 			var aliases []string
 			pattern := regexp.MustCompile(`p(\d+):pullRequest\(number:(\d+)\)`)
@@ -192,6 +198,53 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 				len(snap.Branches)+len(snap.Releases)+len(snap.Deployments) != 0 {
 				t.Fatalf("partial snapshot returned: %d objects", len(snap.Commits)+len(snap.PullRequests)+
 					len(snap.Runs)+len(snap.Branches)+len(snap.Releases)+len(snap.Deployments))
+			}
+		})
+	}
+}
+
+// Every list enforces its item cap: whatever its page budget allows, more
+// items than the cap is an error, and no partial snapshot is returned.
+func TestBuildSnapshotItemCaps(t *testing.T) {
+	for _, tt := range []struct {
+		path, probe string
+		cap         int
+		item        func(int) string
+	}{
+		{"/branches", "branch", 5 * pageSize, branchItem},
+		{"/commits", "commit", 5 * pageSize, commitItem},
+		{"/pulls", "pull request", 5 * pageSize, pullItem},
+		{"/actions/runs", "run", 5 * pageSize, runItem},
+		{"/releases", "release", 2 * pageSize, releaseItem},
+		{"/deployments", "deployment", 2 * pageSize, deploymentItem},
+	} {
+		t.Run(strings.Trim(tt.path, "/"), func(t *testing.T) {
+			server, _ := fakeRepo(t, 5)
+			defer server.Close()
+			wrapped := server.Config.Handler
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, tt.path) {
+					page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+					// One item past the cap: the last allowed page is short,
+					// so the page budget itself is not what fails.
+					body := pageString(page, tt.cap+1, tt.item)
+					if tt.path == "/actions/runs" {
+						body = fmt.Sprintf(`{"total_count":%d,"workflow_runs":%s}`, tt.cap+1, body)
+					}
+					_, _ = w.Write([]byte(body))
+					return
+				}
+				wrapped.ServeHTTP(w, r)
+			})
+			c, _ := NewClient("test-token")
+			c.baseURL = server.URL
+			snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+			if err == nil || !strings.Contains(err.Error(), tt.probe) {
+				t.Fatalf("accepted over-cap %s read: %v", tt.path, err)
+			}
+			if !snap.Now.IsZero() || len(snap.Commits)+len(snap.PullRequests)+len(snap.Runs)+
+				len(snap.Branches)+len(snap.Releases)+len(snap.Deployments) != 0 {
+				t.Fatal("partial snapshot returned")
 			}
 		})
 	}

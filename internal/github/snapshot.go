@@ -21,7 +21,8 @@ const pullDetailBatch = 25
 
 // SnapshotOptions bounds one live repository read. Exceeding a limit is an
 // error, never a partial snapshot: an incomplete read must not masquerade as
-// repository state.
+// repository state. Every list read enforces both its page count and its item
+// cap, which is what keeps plannedRequests a true upper bound.
 type SnapshotOptions struct {
 	Owner, Repo     string
 	MaxRequests     int
@@ -54,8 +55,11 @@ func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 func pages(items int) int { return items/pageSize + 1 }
 
 // plannedRequests is the exact upper bound on requests this configuration can
-// issue. BuildSnapshot rejects configurations whose plan exceeds MaxRequests,
-// so a run can never drift past its budget mid-read.
+// issue: each list read is bounded by pages(item cap) requests and, because
+// every item cap is enforced, pull-request details never exceed
+// ceil(MaxPullRequests/pullDetailBatch) queries. BuildSnapshot rejects
+// configurations whose plan exceeds MaxRequests, so a run can never drift
+// past its budget mid-read.
 func (o SnapshotOptions) plannedRequests() int {
 	detail := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
 	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxPullRequests) +
@@ -154,6 +158,9 @@ func (c *Client) listBranches(ctx context.Context, opts SnapshotOptions, snap *r
 	if err := c.listInto(ctx, opts.repoPath("/branches"), pages(opts.MaxBranches), &src); err != nil {
 		return err
 	}
+	if len(src) > opts.MaxBranches {
+		return fmt.Errorf("GitHub branches exceed the %d-branch limit", opts.MaxBranches)
+	}
 	for _, b := range src {
 		snap.Branches = append(snap.Branches, repo.Branch{Name: b.Name})
 	}
@@ -178,6 +185,9 @@ func (c *Client) listCommits(ctx context.Context, opts SnapshotOptions, branch s
 	}
 	if err := c.listInto(ctx, opts.repoPath("/commits"), pages(opts.MaxCommits), &src); err != nil {
 		return err
+	}
+	if len(src) > opts.MaxCommits {
+		return fmt.Errorf("GitHub commits exceed the %d-commit limit", opts.MaxCommits)
 	}
 	for _, cm := range src {
 		person := cm.Commit.Author
@@ -217,6 +227,9 @@ func (c *Client) listPullRequests(ctx context.Context, opts SnapshotOptions, sna
 	if err := c.listInto(ctx, opts.repoPath("/pulls?state=open"), pages(opts.MaxPullRequests), &src); err != nil {
 		return err
 	}
+	if len(src) > opts.MaxPullRequests {
+		return fmt.Errorf("GitHub open pull requests exceed the %d-pull-request limit", opts.MaxPullRequests)
+	}
 	for _, p := range src {
 		snap.PullRequests = append(snap.PullRequests, repo.PullRequest{
 			Number: p.Number, Head: p.Head.Ref, Base: p.Base.Ref, State: p.State,
@@ -225,7 +238,12 @@ func (c *Client) listPullRequests(ctx context.Context, opts SnapshotOptions, sna
 	return nil
 }
 
+// listRuns reads the workflow-runs object endpoint, which wraps its array and
+// so cannot go through ListAll. Collection follows the same bounded rule:
+// pages in order until a short page, and more items than MaxRuns is an error
+// rather than a truncated history presented as repository state.
 func (c *Client) listRuns(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
+	var runs []repo.WorkflowRun
 	for page := 1; page <= pages(opts.MaxRuns); page++ {
 		var obj struct {
 			WorkflowRuns []struct {
@@ -240,12 +258,16 @@ func (c *Client) listRuns(ctx context.Context, opts SnapshotOptions, snap *repo.
 			return err
 		}
 		for _, r := range obj.WorkflowRuns {
-			snap.Runs = append(snap.Runs, repo.WorkflowRun{ID: r.ID, HeadSHA: r.HeadSHA, Status: r.Status, Conclusion: r.Conclusion})
+			runs = append(runs, repo.WorkflowRun{ID: r.ID, HeadSHA: r.HeadSHA, Status: r.Status, Conclusion: r.Conclusion})
 		}
 		if len(obj.WorkflowRuns) < pageSize {
-			return nil
+			break
 		}
 	}
+	if len(runs) > opts.MaxRuns {
+		return fmt.Errorf("GitHub workflow runs exceed the %d-run limit", opts.MaxRuns)
+	}
+	snap.Runs = runs
 	return nil
 }
 
@@ -273,6 +295,9 @@ func (c *Client) listReleases(ctx context.Context, opts SnapshotOptions, snap *r
 	if err := c.listInto(ctx, opts.repoPath("/releases"), pages(opts.MaxReleases), &src); err != nil {
 		return err
 	}
+	if len(src) > opts.MaxReleases {
+		return fmt.Errorf("GitHub releases exceed the %d-release limit", opts.MaxReleases)
+	}
 	for _, r := range src {
 		when := time.Time{}
 		if r.PublishedAt != nil {
@@ -296,6 +321,9 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 	if err := c.listInto(ctx, opts.repoPath("/deployments"), pages(opts.MaxDeployments), &src); err != nil {
 		return err
 	}
+	if len(src) > opts.MaxDeployments {
+		return fmt.Errorf("GitHub deployments exceed the %d-deployment limit", opts.MaxDeployments)
+	}
 	for _, d := range src {
 		// Per-deployment status reads stay out of this slice; state is left
 		// empty rather than guessed from anything but a real status.
@@ -305,8 +333,12 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 }
 
 // fetchPullDetails fills per-PR review state and head-commit anchors through
-// batched aliased GraphQL queries. A PR that vanishes between list and detail
-// keeps its lane but gains no reviews; the whole call fails on server errors.
+// batched aliased GraphQL queries. Each PR records at most 10 reviews and its
+// head commit at most 3 parents; anything beyond those caps is absent from
+// the snapshot, and the caps are stated here and in the package README until
+// per-PR pagination reads the remainder. A PR that vanishes between list and
+// detail keeps its lane but gains no reviews; the whole call fails on server
+// errors.
 func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
 	known := map[string]bool{}
 	for _, cm := range snap.Commits {

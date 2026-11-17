@@ -76,6 +76,18 @@ func TestNavigationDetailsResizeAndQuit(t *testing.T) {
 	}
 }
 
+// Enter on a run from a live fetch must state what is missing, never a
+// fabricated count.
+func TestRunDetailsWithoutJobs(t *testing.T) {
+	m := model{s: scene.Build(repo.Snapshot{Runs: []repo.WorkflowRun{{ID: 7, HeadSHA: "abc", Status: "in_progress"}}}), width: 60, height: 20}
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(model)
+	content := m.View().Content
+	if !strings.Contains(content, "jobs not recorded") || strings.Contains(content, "0 jobs") {
+		t.Fatalf("run details fabricated a job count: %q", content)
+	}
+}
+
 func TestReorderArgs(t *testing.T) {
 	for _, tt := range []struct {
 		in, want []string

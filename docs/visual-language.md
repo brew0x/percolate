@@ -39,3 +39,6 @@ Lanes occupy only recorded commit paths, rather than full-height columns. A
 merged lane ends at its merge path; no merge is inferred from PR state. A newer
 commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
+Details report only recorded fields: a run without a recorded job list says
+`jobs not recorded` rather than a numeric zero, and a deployment without a
+recorded state leaves it blank.

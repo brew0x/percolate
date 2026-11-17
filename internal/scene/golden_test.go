@@ -104,6 +104,29 @@ func TestRunOutcomesAndPulse(t *testing.T) {
 		t.Fatal("pulse does not loop")
 	}
 }
+
+// A run whose jobs were never recorded must not read as a numeric zero.
+func TestRunJobDetails(t *testing.T) {
+	s := repo.Snapshot{Runs: []repo.WorkflowRun{
+		{ID: 1, HeadSHA: "a", Status: "completed", Conclusion: "success"},
+		{ID: 2, HeadSHA: "a", Status: "completed", Conclusion: "success", Jobs: []repo.Job{{Name: "check", Status: "completed", Conclusion: "success"}}},
+		{ID: 3, HeadSHA: "a", Status: "completed", Conclusion: "success", Jobs: []repo.Job{}},
+	}}
+	marks := scene.Build(s).Marks
+	if len(marks) != 3 {
+		t.Fatalf("expected three run marks, got %d", len(marks))
+	}
+	if want := "jobs not recorded"; !strings.Contains(marks[0].Detail, want) || strings.Contains(marks[0].Detail, "0 jobs") {
+		t.Fatalf("unrecorded jobs rendered as data: %q", marks[0].Detail)
+	}
+	if !strings.Contains(marks[1].Detail, "1 jobs") {
+		t.Fatalf("recorded job count lost: %q", marks[1].Detail)
+	}
+	if !strings.Contains(marks[2].Detail, "0 jobs") {
+		t.Fatalf("explicitly empty job list lost: %q", marks[2].Detail)
+	}
+}
+
 func TestBusyRenderBudget(t *testing.T) {
 	s := scene.Build(fixture(t, "busy"))
 	start := time.Now()

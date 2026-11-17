@@ -150,7 +150,13 @@ func Build(s repo.Snapshot) Scene {
 		if running {
 			glyph, style = '◌', Pulse
 		}
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("run:%d", r.ID), Kind: "run", Label: fmt.Sprintf("CI %d", r.ID), Detail: fmt.Sprintf("run %d · %s · %s · %d jobs · %s", r.ID, r.Status, r.Conclusion, len(r.Jobs), r.HeadSHA), Lane: anchor.Lane, Rank: anchor.Rank, Total: anchor.Total, Glyph: glyph, Style: style, Running: running})
+		// A nil Jobs slice means the snapshot source never recorded jobs; a
+		// numeric zero would state a fact the snapshot does not contain.
+		jobs := "jobs not recorded"
+		if r.Jobs != nil {
+			jobs = fmt.Sprintf("%d jobs", len(r.Jobs))
+		}
+		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("run:%d", r.ID), Kind: "run", Label: fmt.Sprintf("CI %d", r.ID), Detail: fmt.Sprintf("run %d · %s · %s · %s · %s", r.ID, r.Status, r.Conclusion, jobs, r.HeadSHA), Lane: anchor.Lane, Rank: anchor.Rank, Total: anchor.Total, Glyph: glyph, Style: style, Running: running})
 	}
 	for _, r := range s.Releases {
 		anchor, ok := bySHA[r.HeadSHA]

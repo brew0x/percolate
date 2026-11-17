@@ -36,15 +36,20 @@ open pull requests, workflow runs, releases, deployments) and batched aliased
 GraphQL queries that fill per-PR reviews and head-commit anchors (25 PRs per
 query). Defaults plan a 500-open-PR repository at 49 requests, far under the
 300-request budget; a plan that exceeds its budget is rejected before any
-request. Any failure returns no snapshot, and a PR that disappears between the
-list and its detail query keeps its lane but gains no reviews. The result is a
-point-in-time view: objects can change between pages, and list ETags only
-deduplicate identical repeat reads.
+request. Every list read enforces its item cap as well as its page count, so a
+repository with more items than a cap fails with one line instead of
+truncating its history. Any failure returns no snapshot, and a PR that
+disappears between the list and its detail query keeps its lane but gains no
+reviews. Each PR detail records at most 10 reviews and its head commit at most
+3 parents; anything beyond those caps is absent from the snapshot. The result
+is a point-in-time view: objects can change between pages, and list ETags
+only deduplicate identical repeat reads.
 
 Not read in this slice: per-run job lists and per-deployment statuses (both
 are unbounded per-object fan-outs; run details and deployment state stay
 empty rather than guessed). Workflow-run jobs are recorded only when a
-snapshot was made by a source that included them.
+snapshot was made by a source that included them; run details then say
+`jobs not recorded` rather than a numeric zero.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
 local servers; also the seam for a future GitHub Enterprise host). It must be
