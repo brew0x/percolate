@@ -48,7 +48,7 @@ type cachedPage struct {
 }
 
 // Client caches individual REST list pages in memory. It is safe for concurrent
-// calls; callers own pagination and snapshot assembly. Credentials and cached
+// calls; ListAll provides bounded pagination, while callers own snapshot assembly. Credentials and cached
 // responses are never written to disk.
 type Client struct {
 	token   string
