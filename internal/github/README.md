@@ -49,6 +49,15 @@ connection) and its head commit at most 3 parents; anything beyond those caps
 is absent from the snapshot. The result is a point-in-time view: objects can
 change between pages, and list ETags only deduplicate identical repeat reads.
 
+A fork pull request's head lane uses GitHub's fork-qualified `head.label` (for
+example `alice:main`) when its head repository differs from the one being read;
+same-repository pulls keep the bare ref, so their lanes are unchanged. Without
+this, a fork's commit would join the upstream branch of the same name and two
+forks sharing a ref would collapse into one lane. Draft releases returned to
+callers with push access are filtered before the cap check: a draft was never
+published, so it must not draw a release mark or enter release details, and it
+must not consume the release budget.
+
 Not read in this slice: per-run job lists and per-deployment statuses (both
 are unbounded per-object fan-outs; run details and deployment state stay
 empty rather than guessed). Workflow-run jobs are recorded only when a

@@ -320,3 +320,94 @@ func TestBuildSnapshotInput(t *testing.T) {
 		t.Fatalf("issued %d requests before validation", *calls)
 	}
 }
+
+// A fork pull request often keeps the base branch's ref for its head
+// (contributor/main -> main). GitHub qualifies it with the fork owner in
+// head.label; that identity must reach the snapshot so the fork's commit is
+// not drawn on the upstream main lane and two forks sharing a ref stay apart.
+func TestBuildSnapshotForkPullsKeepIdentity(t *testing.T) {
+	detail := func(author string, number, oid int) string {
+		return fmt.Sprintf(`{"number":%d,"headRefOid":"%s","headRefName":"main","baseRefName":"main",`+
+			`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-03T00:00:00Z","author":{"name":"%s"},`+
+			`"parents":{"nodes":[{"oid":"%s"}]}}},"reviews":{"nodes":[]}}`,
+			number, sha(oid), sha(oid), author, sha(1))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/acme/widgets":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			_, _ = w.Write([]byte(`[{"name":"main"}]`))
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			_, _ = fmt.Fprintf(w, `[{"sha":"%s","commit":{"author":{"name":"robin","date":"2026-01-01T00:00:00Z"}}}]`, sha(1))
+		case strings.HasSuffix(r.URL.Path, "/pulls"):
+			_, _ = fmt.Fprintf(w, `[
+				{"number":1,"state":"open","head":{"ref":"main","label":"alice:main","repo":{"full_name":"alice/widgets"}},"base":{"ref":"main"}},
+				{"number":2,"state":"open","head":{"ref":"main","label":"bob:main","repo":{"full_name":"bob/widgets"}},"base":{"ref":"main"}}
+			]`)
+		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			_, _ = w.Write([]byte(`{"total_count":0,"workflow_runs":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/releases"),
+			strings.HasSuffix(r.URL.Path, "/deployments"):
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/graphql":
+			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":%s,"p1":%s}}}`,
+				detail("alice", 1, 101), detail("bob", 2, 102))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"alice:main", "bob:main"} {
+		if got := snap.PullRequests[i].Head; got != want {
+			t.Fatalf("PR %d head lane=%q, want %q", i+1, got, want)
+		}
+		if got := snap.PullRequests[i].Base; got != "main" {
+			t.Fatalf("PR %d base=%q, want main", i+1, got)
+		}
+	}
+	lanes := map[string]int{}
+	for _, cm := range snap.Commits {
+		lanes[cm.Branch]++
+	}
+	if len(snap.Commits) != 3 || lanes["alice:main"] != 1 || lanes["bob:main"] != 1 || lanes["main"] != 1 {
+		t.Fatalf("commits=%d, lanes=%v, want one on alice:main, bob:main and main", len(snap.Commits), lanes)
+	}
+}
+
+// GitHub returns draft releases to callers with push access. A draft was never
+// published, so it must not appear as a release. The draft is filtered before
+// the cap check and must not consume the release budget.
+func TestBuildSnapshotSkipsDraftReleases(t *testing.T) {
+	server, _ := fakeRepo(t, 2)
+	defer server.Close()
+	wrapped := server.Config.Handler
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			_, _ = fmt.Fprintf(w, `[
+				{"tag_name":"v1","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false},
+				{"tag_name":"v2-draft","target_commitish":"%s","published_at":null,"draft":true}
+			]`, sha(1), sha(2))
+			return
+		}
+		wrapped.ServeHTTP(w, r)
+	})
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	opts.MaxReleases = 1 // one published release plus a draft fits only if drafts are filtered first
+	snap, err := c.BuildSnapshot(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Releases) != 1 || snap.Releases[0].Tag != "v1" {
+		t.Fatalf("releases=%+v, want only the published v1", snap.Releases)
+	}
+}

@@ -91,9 +91,11 @@ pull requests and 1000 branches, releases and deployments each. These fit an
 active repository. If a list still exceeds its limit, Percolate stops with one
 clear line rather than drawing a partial landscape that pretends to be the
 whole repository; it never shows truncated history as if it were complete.
-The worst case is under 250 API requests. `PERCOLATE_GITHUB_URL` may point at a
-different GitHub host over https; plain http is accepted only on loopback,
-because every request carries your token.
+Fork pull requests use their fork-qualified head label as a lane, so a fork's
+`main` is never confused with the upstream `main`; unpublished draft releases
+are not shown. The worst case is under 250 API requests.
+`PERCOLATE_GITHUB_URL` may point at a different GitHub host over https; plain
+http is accepted only on loopback, because every request carries your token.
 
 ## Development
 

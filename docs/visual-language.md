@@ -17,6 +17,11 @@
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
 
+Only published releases enter the snapshot: a draft was never published and
+draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
+(for example `alice:main`), so its commit never joins the upstream lane of the
+same branch name.
+
 CI sits two columns right of its commit. Releases or runs whose SHA is absent
 use an explicit `unlinked` lane. Commit and PR paths use separate vertical
 regions; releases collect at the bottom. Branch names and object labels truncate

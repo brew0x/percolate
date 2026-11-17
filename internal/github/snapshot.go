@@ -223,7 +223,11 @@ func (c *Client) listPullRequests(ctx context.Context, opts SnapshotOptions, sna
 		Number int    `json:"number"`
 		State  string `json:"state"`
 		Head   struct {
-			Ref string `json:"ref"`
+			Ref   string `json:"ref"`
+			Label string `json:"label"`
+			Repo  struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
 		} `json:"head"`
 		Base struct {
 			Ref string `json:"ref"`
@@ -235,9 +239,22 @@ func (c *Client) listPullRequests(ctx context.Context, opts SnapshotOptions, sna
 	if len(src) > opts.MaxPullRequests {
 		return fmt.Errorf("GitHub open pull requests exceed the %d-pull-request limit", opts.MaxPullRequests)
 	}
+	upstream := opts.Owner + "/" + opts.Repo
 	for _, p := range src {
+		head := p.Head.Ref
+		// A fork pull request's head branch lives in another repository and
+		// can share a ref with the base branch (contributor/main -> main).
+		// GitHub's head.label qualifies it with the fork owner, so use that
+		// as the head lane: otherwise the fork's commit joins the upstream
+		// branch lane and two forks with the same ref collapse into one.
+		// Same-repository pulls keep the branch name, so recorded lanes for
+		// them are unchanged.
+		if p.Head.Repo.FullName != "" && p.Head.Label != "" &&
+			!strings.EqualFold(p.Head.Repo.FullName, upstream) {
+			head = p.Head.Label
+		}
 		snap.PullRequests = append(snap.PullRequests, repo.PullRequest{
-			Number: p.Number, Head: p.Head.Ref, Base: p.Base.Ref, State: p.State,
+			Number: p.Number, Head: head, Base: p.Base.Ref, State: p.State,
 		})
 	}
 	return nil
@@ -296,14 +313,24 @@ func (c *Client) listReleases(ctx context.Context, opts SnapshotOptions, snap *r
 		TagName         string     `json:"tag_name"`
 		TargetCommitish string     `json:"target_commitish"`
 		PublishedAt     *time.Time `json:"published_at"`
+		Draft           bool       `json:"draft"`
 	}
 	if err := c.listInto(ctx, opts.repoPath("/releases"), pages(opts.MaxReleases), &src); err != nil {
 		return err
 	}
-	if len(src) > opts.MaxReleases {
+	// GitHub returns drafts to callers with push access. A draft was never
+	// published, so it must not draw a release mark or enter release details.
+	// Filter before the cap check so drafts do not consume the release budget.
+	published := src[:0]
+	for _, r := range src {
+		if !r.Draft {
+			published = append(published, r)
+		}
+	}
+	if len(published) > opts.MaxReleases {
 		return fmt.Errorf("GitHub releases exceed the %d-release limit", opts.MaxReleases)
 	}
-	for _, r := range src {
+	for _, r := range published {
 		when := time.Time{}
 		if r.PublishedAt != nil {
 			when = *r.PublishedAt
@@ -438,8 +465,9 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 			if commit.Author != nil && commit.Author.Name != nil {
 				author = *commit.Author.Name
 			}
-			// The lane label comes from the REST list so head and lane always
-			// agree, even if the branch is renamed between reads.
+			// The lane label comes from the REST list (fork-qualified for a
+			// fork pull request) so head and lane always agree, even if the
+			// branch is renamed between reads.
 			snap.Commits = append(snap.Commits, repo.Commit{
 				SHA: commit.OID, Parents: parents, Branch: p.Head, Author: author, Time: *commit.CommittedDate,
 			})
