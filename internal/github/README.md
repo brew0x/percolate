@@ -1,7 +1,8 @@
-# GitHub transport foundation
+# GitHub transport
 
-This package is preparation for issue #3, not a live snapshot adapter. The CLI
-still only accepts recorded fixtures. No network calls happen on startup.
+This package is the only network boundary in Percolate. The CLI fetches a
+repository through it, and rendering stays pure over the resulting snapshot.
+Credentials and cached responses are never written to disk.
 
 `ResolveToken(ctx)` prefers a nonempty `GITHUB_TOKEN`, then invokes
 `gh auth token --hostname github.com` with a five-second deadline. Failure
@@ -20,16 +21,39 @@ refresh. The caller supplies a positive request bound; exhausting it or failing
 any page returns no partial list. Non-array responses and pages over 100 items
 are rejected. Link headers are not needed for this traversal.
 
-This is not an atomic read: objects changing while pages are fetched can move
-between pages. Snapshot assembly must account for that limitation.
+`Client.GraphQL(ctx, query, variables)` posts one query to /graphql and
+returns only the data member; any server-side error rejects the whole call, so
+partial results cannot be mistaken for complete data. Every REST and GraphQL
+request is counted by `Client.Requests()`.
 
-Remaining work for #3: assemble repo.Snapshot from paginated REST lists and
-batched GraphQL PR details; add rate-limit handling;
-prove fewer than 300 requests for 500 PRs; wire owner/repo and --record into
-the CLI; record a verified public repository and prove identical replay frames.
-The cache is intentionally memory-only so private response data and credentials
-are not persisted by this layer. Public fixture provenance must be checked
-before adding recorded data to the repository.
+Rate-limit responses (403/429 with `X-RateLimit-Remaining: 0` or a
+`Retry-After`) produce one line that says when to come back. Server error
+text is flattened to a single line; bodies and tokens never appear in errors.
+
+`Client.BuildSnapshot(ctx, SnapshotOptions)` assembles a `repo.Snapshot`
+from bounded REST lists (repository meta, branches, default-branch commits,
+open pull requests, workflow runs, releases, deployments) and batched aliased
+GraphQL queries that fill per-PR reviews and head-commit anchors (25 PRs per
+query). Defaults plan a 500-open-PR repository at 49 requests, far under the
+300-request budget; a plan that exceeds its budget is rejected before any
+request. Any failure returns no snapshot, and a PR that disappears between the
+list and its detail query keeps its lane but gains no reviews. The result is a
+point-in-time view: objects can change between pages, and list ETags only
+deduplicate identical repeat reads.
+
+Not read in this slice: per-run job lists and per-deployment statuses (both
+are unbounded per-object fan-outs; run details and deployment state stay
+empty rather than guessed). Workflow-run jobs are recorded only when a
+snapshot was made by a source that included them.
+
+`PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
+local servers; also the seam for a future GitHub Enterprise host). It must be
+an absolute http(s) URL.
+
+Recorded public fixtures (`testdata/fixtures/recorded-*.json`) must come from
+public repositories only, with provenance noted; never commit private repo
+data. Producing the first verified public recording is the remaining open
+part of issue #3.
 
 Tests use local httptest servers and injected credential-helper output. They
 require no GitHub access, real credentials, or changes to rendering.

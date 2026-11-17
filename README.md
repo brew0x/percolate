@@ -2,7 +2,8 @@
 
 A living landscape of a repository's development lifecycle, inside your terminal.
 Branches flow downward; commits, reviews and CI meet on the way to releases.
-This first slice plays fictional recorded snapshots; live GitHub data comes later.
+`percolate owner/repo` fetches a live snapshot from GitHub; any snapshot can be
+recorded to a file and replayed identically.
 
 ```text
   PERCOLATE  1–3/3
@@ -47,7 +48,20 @@ go install github.com/brew0x/percolate/cmd/percolate@latest
 
 ## Usage
 
-From a checkout, open a recorded landscape:
+Watch a real repository (token from `GITHUB_TOKEN` or `gh auth login`):
+
+```sh
+percolate brew0x/percolate
+```
+
+Record what you saw, then replay any view of it exactly, offline:
+
+```sh
+percolate brew0x/percolate --record snapshot.json
+percolate --fixture snapshot.json
+```
+
+From a checkout, open the bundled fictional landscapes:
 
 ```sh
 percolate --fixture testdata/fixtures/small.json
@@ -64,8 +78,10 @@ percolate render --fixture testdata/fixtures/small.json --frame 7 --size 100x30 
 percolate version
 ```
 
-Without a fixture, Percolate prints a hint and exits with status 2. Color is
-optional in render mode; use a Unicode-capable terminal font.
+`render` works with a repository too, for example to prove a recording replays
+to identical frames. Without arguments, Percolate prints a hint and exits with
+status 2; a fetch without any token fails with one line telling you where to
+get one. Color is optional in render mode; use a Unicode-capable terminal font.
 
 ## Development
 
