@@ -137,6 +137,19 @@
           "conclusion": ""
         }
       ]
+    },
+    {
+      "id": 2,
+      "head_sha": "0000000d0000000000000000000000000000000d",
+      "status": "in_progress",
+      "conclusion": "",
+      "jobs": [
+        {
+          "name": "check",
+          "status": "in_progress",
+          "conclusion": ""
+        }
+      ]
     }
   ],
   "releases": [],

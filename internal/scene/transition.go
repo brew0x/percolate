@@ -21,9 +21,10 @@ const TransitionFrames = 32
 // All three changes are baked into concrete mark and link values, so Frame
 // stays a pure function of (scene, frameIndex, width, height):
 //
-//   - a bead that is new in next drips down from above its lane into its final
-//     rank, dim until it settles, with its parent paths following it; a newest
-//     commit (final rank 0) starts above the lane so it visibly falls in;
+//   - a bead that is new in next drips toward its final rank, dim until it
+//     settles, with its parent paths and anchored CI following it; a newest
+//     commit (final rank 0) starts one row above the lane so it visibly falls
+//     in without its path crossing the lane names;
 //   - a run that was still running in prev but is completed in next stops
 //     pulsing halfway through and settles on its recorded outcome glyph; a run
 //     still running in next keeps pulsing for the whole transition;
@@ -52,16 +53,22 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 	mid := TransitionFrames / 2
 	last := TransitionFrames - 1
 
+	// entering holds the row values of commits that are new in next, keyed by
+	// SHA. Marks anchored to one of them take the same values, so CI stays
+	// beside the commit it belongs to while that commit is still falling.
+	type rows struct{ rank, drip int }
+	entering := make(map[string]rows)
+
 	// Entering objects form in: dim for the first half. Entering commits also
-	// drip down their lane toward their final rank, with their parent paths
-	// following. A commit landing below the top starts at rank 0. A newest
-	// commit lands at rank 0 itself, so it starts a few ranks above the lane
-	// and falls in: otherwise the common "new latest commit" would not move.
+	// drip toward their final row, with their parent paths following. A commit
+	// landing below the top starts at rank 0. A newest commit lands at rank 0
+	// itself, so it drips from one row above the commit region instead: it
+	// visibly falls in without a negative rank feeding Frame's geometry (the
+	// parent path would otherwise cross the lane-name row).
 	prevCommits := make(map[string]bool, len(prev.Commits))
 	for _, c := range prev.Commits {
 		prevCommits[c.SHA] = true
 	}
-	const newestDripStart = -3
 	for i := range base.Marks {
 		m := &base.Marks[i]
 		if prevIDs[m.ID] {
@@ -70,12 +77,55 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 		if frame < mid {
 			m.Style = Faded
 		}
-		if m.Kind == "commit" && !prevCommits[strings.TrimPrefix(m.ID, "commit:")] {
-			if m.Rank == 0 {
-				m.Rank = newestDripStart + (0-newestDripStart)*frame/last
-			} else {
-				m.Rank = m.Rank * frame / last
+		if m.Kind != "commit" {
+			continue
+		}
+		sha := strings.TrimPrefix(m.ID, "commit:")
+		if prevCommits[sha] {
+			continue
+		}
+		if m.Rank == 0 {
+			if frame < mid {
+				m.Drip = 1
 			}
+		} else {
+			m.Rank = m.Rank * frame / last
+		}
+		entering[sha] = rows{rank: m.Rank, drip: m.Drip}
+	}
+
+	// Runs, releases and deployments are anchored to a commit's SHA in Build.
+	// Follow the entering commit's row so a run drawn two columns right of a
+	// new bead does not sit at its final rank while the bead is still falling.
+	nextRuns := make(map[int64]repo.WorkflowRun, len(next.Runs))
+	for _, r := range next.Runs {
+		nextRuns[r.ID] = r
+	}
+	nextReleases := make(map[string]string, len(next.Releases))
+	for _, r := range next.Releases {
+		nextReleases[r.Tag] = r.HeadSHA
+	}
+	nextDeployments := make(map[int64]string, len(next.Deployments))
+	for _, d := range next.Deployments {
+		nextDeployments[d.ID] = d.HeadSHA
+	}
+	for i := range base.Marks {
+		m := &base.Marks[i]
+		var sha string
+		switch m.Kind {
+		case "run":
+			if id, err := strconv.ParseInt(strings.TrimPrefix(m.ID, "run:"), 10, 64); err == nil {
+				sha = nextRuns[id].HeadSHA
+			}
+		case "release":
+			sha = nextReleases[strings.TrimPrefix(m.ID, "release:")]
+		case "deployment":
+			if id, err := strconv.ParseInt(strings.TrimPrefix(m.ID, "deployment:"), 10, 64); err == nil {
+				sha = nextDeployments[id]
+			}
+		}
+		if r, ok := entering[sha]; ok {
+			m.Rank, m.Drip = r.rank, r.drip
 		}
 	}
 
@@ -103,10 +153,6 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 	prevRuns := make(map[int64]repo.WorkflowRun, len(prev.Runs))
 	for _, r := range prev.Runs {
 		prevRuns[r.ID] = r
-	}
-	nextRuns := make(map[int64]repo.WorkflowRun, len(next.Runs))
-	for _, r := range next.Runs {
-		nextRuns[r.ID] = r
 	}
 	for i := range base.Marks {
 		m := &base.Marks[i]

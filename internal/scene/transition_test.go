@@ -5,10 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 )
+
+// rowText is the visible runes of one frame row, without trailing padding.
+func rowText(row []scene.Cell) string {
+	var b strings.Builder
+	for _, c := range row {
+		b.WriteRune(c.Rune)
+	}
+	return strings.TrimSpace(b.String())
+}
 
 // Transition is pure over (prev, next, frame): repeated calls agree, two
 // different recorded fixture pairs stay deterministic, and the final frame is
@@ -119,27 +131,93 @@ func TestTransitionKeepsRunningRunPulsing(t *testing.T) {
 }
 
 // The common case of a new newest commit (final rank 0) drips in from above
-// its lane rather than sitting motionless at rank 0 for every frame.
+// its lane rather than sitting motionless at rank 0 for every frame. The fall
+// is a row offset, not a negative rank, so it stays clear of the lane name;
+// CI anchored to the new commit follows it down.
 func TestTransitionNewestCommitDrips(t *testing.T) {
 	prev, next := fixture(t, "newest"), fixture(t, "newest-next")
 	const newSHA = "0000000d0000000000000000000000000000000d"
 	first := markByID(t, scene.Transition(prev, next, 0), "commit:"+newSHA)
 	midway := markByID(t, scene.Transition(prev, next, 16), "commit:"+newSHA)
 	final := markByID(t, scene.Transition(prev, next, scene.TransitionFrames), "commit:"+newSHA)
-	if first.Rank >= 0 {
-		t.Fatalf("newest commit did not start above its lane: rank %d", first.Rank)
+	if first.Drip == 0 || midway.Drip != 0 || final.Drip != 0 {
+		t.Fatalf("newest commit did not fall into its lane: drip %d -> %d -> %d", first.Drip, midway.Drip, final.Drip)
 	}
-	if midway.Rank <= first.Rank || final.Rank != 0 || final.Rank <= midway.Rank {
-		t.Fatalf("newest commit did not drip in: %d -> %d -> %d", first.Rank, midway.Rank, final.Rank)
+	if first.Rank != 0 || midway.Rank != 0 || final.Rank != 0 {
+		t.Fatalf("newest commit rank changed: %d -> %d -> %d", first.Rank, midway.Rank, final.Rank)
 	}
+
+	// The bead starts in the gap above the commit region and lands in the top
+	// row. Neither it nor its parent path ever cross the lane-name row.
+	firstFrame := scene.Frame(scene.Transition(prev, next, 0), 0, 100, 30)
+	if firstFrame[3][3].Rune != '●' {
+		t.Fatalf("newest commit not staging above its lane:\n%s", firstFrame)
+	}
+	for _, frame := range []int{0, 8, 16, 24, 31, scene.TransitionFrames} {
+		g := scene.Frame(scene.Transition(prev, next, frame), frame, 100, 30)
+		if got := rowText(g[2]); got != "main" {
+			t.Fatalf("frame %d corrupted the lane name: %q\n%s", frame, got, g)
+		}
+	}
+	landed := scene.Frame(scene.Transition(prev, next, 16), 16, 100, 30)
+	if landed[4][3].Rune != '●' {
+		t.Fatalf("newest commit did not land in the top row:\n%s", landed)
+	}
+
 	linked := false
 	for _, link := range scene.Transition(prev, next, 0).Links {
-		if link.Child.ID == "commit:"+newSHA && link.Child.Rank == first.Rank {
+		if link.Child.ID == "commit:"+newSHA && link.Child.Drip == first.Drip {
 			linked = true
 		}
 	}
 	if !linked {
 		t.Fatal("newest commit's parent path stayed at its final row")
+	}
+
+	// A run whose head is the entering commit keeps its row through the drip,
+	// so CI stays two columns right of the bead it belongs to.
+	for _, frame := range []int{0, 8, 16, 31} {
+		s := scene.Transition(prev, next, frame)
+		commit, run := markByID(t, s, "commit:"+newSHA), markByID(t, s, "run:2")
+		if run.Rank != commit.Rank || run.Drip != commit.Drip {
+			t.Fatalf("frame %d: run at %+v, commit at %+v", frame, run, commit)
+		}
+	}
+}
+
+// The very first commit of a repository has Total == 1, where Frame ignores
+// Rank entirely. Its drip must still be carried by the row offset and must
+// leave the lane name intact.
+func TestTransitionFirstCommitDrips(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{Now: day, Branches: []repo.Branch{{Name: "main"}}}
+	next := repo.Snapshot{
+		Now:      day.Add(time.Minute),
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: "first", Branch: "main", Author: "robin", Time: day}},
+	}
+	for _, frame := range []int{0, 8, 15} {
+		s := scene.Transition(prev, next, frame)
+		m := markByID(t, s, "commit:first")
+		if m.Total != 1 || m.Drip == 0 {
+			t.Fatalf("first commit did not drip at frame %d: %+v", frame, m)
+		}
+		g := scene.Frame(s, frame, 60, 20)
+		if got := rowText(g[2]); got != "main" {
+			t.Fatalf("frame %d corrupted the lane name: %q\n%s", frame, got, g)
+		}
+		if g[3][3].Rune != '●' {
+			t.Fatalf("first commit not staging above its lane at frame %d:\n%s", frame, g)
+		}
+	}
+	for _, frame := range []int{16, 31, scene.TransitionFrames} {
+		s := scene.Transition(prev, next, frame)
+		if m := markByID(t, s, "commit:first"); m.Drip != 0 {
+			t.Fatalf("first commit still dripping at frame %d: %+v", frame, m)
+		}
+		if g := scene.Frame(s, frame, 60, 20); g[4][3].Rune != '●' {
+			t.Fatalf("first commit did not land at frame %d:\n%s", frame, g)
+		}
 	}
 }
 

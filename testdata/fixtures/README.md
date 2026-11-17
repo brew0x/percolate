@@ -47,10 +47,12 @@ data is involved.
 
 ## `newest.json`, `newest-next.json` — fictional newest-commit pair
 
-`newest-next.json` adds one new latest commit (`...0d`) to `newest.json` and
-leaves workflow run 1 in progress. It exercises the common case the `small` pair
-misses: a new commit whose final rank is zero, and an unchanged running run that
-must keep pulsing. Fiction derived from a checked-in fixture; no private data.
+`newest-next.json` adds one new latest commit (`...0d`) to `newest.json`,
+leaves workflow run 1 in progress and starts run 2 on the new commit. It
+exercises the common case the `small` pair misses: a new commit whose final rank
+is zero, an unchanged running run that must keep pulsing, and CI anchored to the
+entering commit that must follow it down the lane. Fiction derived from a
+checked-in fixture; no private data.
 
 ## `merged.json`, `merged-next.json` — fictional removed-lane pair
 

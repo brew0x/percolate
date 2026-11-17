@@ -381,6 +381,48 @@ func TestLiveRefreshStartsTransition(t *testing.T) {
 	}
 }
 
+// A refresh that inserts a new commit ahead of the selected one must keep the
+// same object highlighted and keep its open details. Preserving only the
+// numeric index would hand the selection to the newly inserted commit.
+func TestRefreshKeepsSelectedObject(t *testing.T) {
+	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2, day3 := day1.Add(24*time.Hour), day1.Add(48*time.Hour)
+	prev := repo.Snapshot{
+		Now:      day3,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: []repo.Commit{
+			{SHA: sha(11), Branch: "main", Author: "robin", Time: day3},
+			{SHA: sha(22), Branch: "main", Author: "sage", Time: day1, Parents: []string{sha(11)}},
+		},
+	}
+	next := prev
+	next.Now = day3.Add(time.Hour)
+	// The new commit sorts between the two originals, so numeric index 1
+	// would now point at it instead of the selected sage commit.
+	next.Commits = append([]repo.Commit{
+		{SHA: sha(33), Branch: "main", Author: "newcomer", Time: day2, Parents: []string{sha(11)}},
+	}, prev.Commits...)
+
+	selected := scene.Build(prev)
+	m := model{
+		s: selected, prev: prev, cur: prev, width: 60, height: 20,
+		selected: 1, selectedID: selected.Marks[1].ID, details: true,
+	}
+	if before := m.View().Content; !strings.Contains(before, "sage") {
+		t.Fatalf("test setup lost the selected details:\n%s", before)
+	}
+
+	updated, _ := m.Update(snapshotMsg{snap: next})
+	m = updated.(model)
+	if got, want := m.s.Marks[m.selected].ID, "commit:"+sha(22); got != want {
+		t.Fatalf("selected index points at %q, want %q", got, want)
+	}
+	after := m.View().Content
+	if !strings.Contains(after, "sage") || strings.Contains(after, "newcomer") {
+		t.Fatalf("refresh silently changed the selected object:\n%s", after)
+	}
+}
+
 // A failed poll is a footer status that keeps the old scene and schedules a
 // retry; it never draws a fabricated snapshot.
 func TestFailedRefreshKeepsScene(t *testing.T) {

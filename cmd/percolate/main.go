@@ -100,6 +100,9 @@ func run(args []string, out, errout io.Writer) int {
 		s: s, width: w, height: h, selected: 0,
 		prev: snapshot, cur: snapshot, fetch: liveFetch,
 	}
+	if len(s.Marks) > 0 {
+		m.selectedID = s.Marks[0].ID
+	}
 	_, err = tea.NewProgram(m).Run()
 	if err != nil {
 		fmt.Fprintln(errout, err)
@@ -243,7 +246,42 @@ type model struct {
 	transitionStart                int
 	transiting, refreshFailed      bool
 	frame, width, height, selected int
+	selectedID                     string
 	details                        bool
+}
+
+// markIndex finds a mark by its recorded identity. A refresh can insert a
+// commit that sorts ahead of the selected one, so a numeric index alone is not
+// a stable identity for the highlight or an open detail panel.
+func markIndex(s scene.Scene, id string) int {
+	for i, m := range s.Marks {
+		if m.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectionID is the identity currently selected. A caller that sets only the
+// numeric index still selects the mark at that index, so older and test-built
+// models keep their behaviour.
+func (m model) selectionID() string {
+	if m.selectedID != "" {
+		return m.selectedID
+	}
+	if m.selected >= 0 && m.selected < len(m.s.Marks) {
+		return m.s.Marks[m.selected].ID
+	}
+	return ""
+}
+
+// moveSelection advances the numeric index and its identity together.
+func (m *model) moveSelection(delta int) {
+	if len(m.s.Marks) == 0 {
+		return
+	}
+	m.selected = (m.selected + delta + len(m.s.Marks)) % len(m.s.Marks)
+	m.selectedID = m.s.Marks[m.selected].ID
 }
 
 func (m model) Init() tea.Cmd {
@@ -283,13 +321,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, poll()
 		}
 		m.refreshFailed = false
+		keep := m.selectionID()
 		if !live.Equal(m.cur, v.snap) {
 			m.prev, m.cur = m.cur, v.snap
 			m.s = scene.Build(v.snap)
 			m.transitionStart = m.frame
 			m.transiting = true
-			if m.selected >= len(m.s.Marks) {
-				m.selected = 0
+			// Keep the same object selected when it still exists. Reconciling
+			// by identity stops an inserted commit from silently taking over
+			// the highlight and any open detail panel.
+			if i := markIndex(m.s, keep); i >= 0 {
+				m.selected, m.selectedID = i, keep
+			} else if len(m.s.Marks) > 0 {
+				m.selected, m.selectedID = 0, m.s.Marks[0].ID
+			} else {
+				m.selected, m.selectedID = 0, ""
 			}
 		}
 		return m, poll()
@@ -301,13 +347,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "tab", "right", "down":
-			if len(m.s.Marks) > 0 {
-				m.selected = (m.selected + 1) % len(m.s.Marks)
-			}
+			m.moveSelection(1)
 		case "shift+tab", "left", "up":
-			if len(m.s.Marks) > 0 {
-				m.selected = (m.selected + len(m.s.Marks) - 1) % len(m.s.Marks)
-			}
+			m.moveSelection(-1)
 		case "enter":
 			m.details = !m.details
 		case "esc":
@@ -321,8 +363,11 @@ func (m model) View() tea.View {
 	if m.transiting {
 		s = scene.Transition(m.prev, m.cur, max(0, m.frame-m.transitionStart))
 	}
-	if len(s.Marks) > 0 {
-		selected := min(m.selected, len(s.Marks)-1)
+	selected := markIndex(s, m.selectedID)
+	if selected < 0 {
+		selected = min(m.selected, len(s.Marks)-1)
+	}
+	if selected >= 0 {
 		mark := s.Marks[selected]
 		s.SelectedID = mark.ID
 		count := scene.VisibleLanes(m.width)
@@ -340,8 +385,7 @@ func (m model) View() tea.View {
 	if m.refreshFailed {
 		footer = "refresh failed; retrying  ·  " + footer
 	}
-	if m.details && len(s.Marks) > 0 {
-		selected := min(m.selected, len(s.Marks)-1)
+	if m.details && selected >= 0 {
 		footer = s.Marks[selected].Detail + "\n\n" + footer
 	}
 	footer = lipgloss.NewStyle().Width(max(0, m.width)).MaxWidth(max(0, m.width)).MaxHeight(reserve).Render(footer)
