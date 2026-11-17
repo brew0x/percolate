@@ -195,6 +195,14 @@ func RunGlyph(conclusion string) rune {
 	}
 }
 
+// pulseGlyph is the four-phase, eight-frame-per-phase running signal. Both
+// Frame and Transition use it so a live settle and a still frame pulse alike.
+func pulseGlyph(frame int) rune {
+	cycle := []rune{'◌', '◔', '◑', '◕'}
+	i := (((frame % 32) + 32) % 32) / 8
+	return cycle[i]
+}
+
 // VisibleLanes is shared by viewport navigation and rendering.
 func VisibleLanes(width int) int { return max(1, (width-4)/14) }
 
@@ -355,8 +363,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		case "run":
 			glyph := m.Glyph
 			if m.Running {
-				cycle := []rune{'◌', '◔', '◑', '◕'}
-				glyph = cycle[((frameIndex%32)+32)%32/8]
+				glyph = pulseGlyph(frameIndex)
 				if ((frameIndex%32)+32)%32 < 16 && !selected {
 					style = Faded
 				}

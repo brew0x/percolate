@@ -11,6 +11,8 @@
 - **Snapshot** — JSON-serialisable repository state with an explicit now.
 - **Scene** — a deterministic collection of lanes and inspectable marks.
 - **Frame** — a bounded grid of runes and style IDs at one animation index.
+- **Transition** — the pure scene for one frame between two recorded snapshots;
+  new beads drip in, finished runs settle, and objects that left fade.
 
 Avoid: particles, decoration, random motion, dashboard, real-time magic.
 Nothing should imply activity that the snapshot does not contain.

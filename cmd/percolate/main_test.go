@@ -5,6 +5,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +16,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 )
@@ -316,5 +319,76 @@ func TestWatchLiveFailure(t *testing.T) {
 	message := strings.TrimSuffix(errOut.String(), "\n")
 	if !strings.Contains(message, "rate limit") || strings.Contains(message, "\n") || strings.Contains(message, "test-token") {
 		t.Fatalf("not a safe one-line failure: %q", message)
+	}
+}
+
+// A live refresh that changes the snapshot starts a frame-indexed transition;
+// an unchanged poll does not replay one, and the transition ends on its own.
+func TestLiveRefreshStartsTransition(t *testing.T) {
+	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.Add(24 * time.Hour)
+	day3 := day2.Add(24 * time.Hour)
+	prev := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: []repo.Commit{
+			{SHA: sha(1), Branch: "main", Author: "robin", Time: day3},
+			{SHA: sha(2), Branch: "main", Author: "robin", Time: day2, Parents: []string{sha(1)}},
+			{SHA: sha(3), Branch: "main", Author: "robin", Time: day1, Parents: []string{sha(2)}},
+		},
+	}
+	next := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: append([]repo.Commit{
+			{SHA: sha(4), Branch: "main", Author: "robin", Time: day1.Add(12 * time.Hour), Parents: []string{sha(3)}},
+		}, prev.Commits...),
+	}
+	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 100, height: 30}
+
+	updated, _ := m.Update(snapshotMsg{snap: prev})
+	m = updated.(model)
+	if m.transiting {
+		t.Fatal("an unchanged snapshot replayed a transition")
+	}
+
+	updated, cmd := m.Update(snapshotMsg{snap: next})
+	m = updated.(model)
+	if !m.transiting || cmd == nil {
+		t.Fatal("a changed snapshot did not start a transition")
+	}
+	if !live.Equal(m.cur, next) || !live.Equal(m.prev, prev) {
+		t.Fatal("transition did not bracket the two snapshots")
+	}
+
+	m.frame = 0
+	first := m.View().Content
+	m.frame = scene.TransitionFrames // the settled scene differs from the start
+	second := m.View().Content
+	if first == second {
+		t.Fatal("View did not render the transition")
+	}
+	for i := 0; i <= scene.TransitionFrames; i++ {
+		updated, _ = m.Update(tickMsg{})
+		m = updated.(model)
+	}
+	if m.transiting {
+		t.Fatal("transition did not end after TransitionFrames")
+	}
+}
+
+// A failed poll is a footer status that keeps the old scene and schedules a
+// retry; it never draws a fabricated snapshot.
+func TestFailedRefreshKeepsScene(t *testing.T) {
+	prev := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 60, height: 20}
+	updated, cmd := m.Update(snapshotMsg{err: errors.New("temporary failure")})
+	m = updated.(model)
+	if !m.refreshFailed || cmd == nil {
+		t.Fatal("failed refresh was not noted or retried")
+	}
+	if !strings.Contains(m.View().Content, "refresh failed") {
+		t.Fatal("failed refresh had no footer status")
+	}
+	if !live.Equal(m.cur, prev) || m.transiting {
+		t.Fatal("failed refresh changed the scene")
 	}
 }

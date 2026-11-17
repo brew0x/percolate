@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/brew0x/percolate/internal/github"
+	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 	"image/color"
@@ -63,6 +64,7 @@ func run(args []string, out, errout io.Writer) int {
 		return 2
 	}
 	var snapshot repo.Snapshot
+	var liveFetch live.Fetcher
 	if *fixture != "" {
 		data, err := os.ReadFile(*fixture)
 		if err != nil {
@@ -74,7 +76,8 @@ func run(args []string, out, errout io.Writer) int {
 			return 1
 		}
 	} else {
-		snapshot, err = watch(context.Background(), *record, fs.Args())
+		var fetch live.Fetcher
+		snapshot, fetch, err = watch(context.Background(), *record, fs.Args())
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			if errors.As(err, new(usageError)) {
@@ -82,13 +85,22 @@ func run(args []string, out, errout io.Writer) int {
 			}
 			return 1
 		}
+		if !render {
+			// Only the interactive window polls. A render is a single exact
+			// frame and a fixture is a fixed replay, so neither refreshes.
+			liveFetch = fetch
+		}
 	}
 	s := scene.Build(snapshot)
 	if render {
 		fmt.Fprintln(out, paint(scene.Frame(s, *frame, w, h), *colored))
 		return 0
 	}
-	_, err = tea.NewProgram(model{s: s, width: w, height: h, selected: 0}).Run()
+	m := model{
+		s: s, width: w, height: h, selected: 0,
+		prev: snapshot, cur: snapshot, fetch: liveFetch,
+	}
+	_, err = tea.NewProgram(m).Run()
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 1
@@ -138,38 +150,43 @@ func reorderArgs(args []string) []string {
 	return append(rest, positional...)
 }
 
-// watch fetches a live snapshot for owner/repo and, when a path is given,
-// records the exact JSON so any later view can replay it identically.
-func watch(ctx context.Context, recordPath string, args []string) (repo.Snapshot, error) {
+// watch fetches a live snapshot for owner/repo and returns a Fetcher that can
+// repeat the same bounded read on the poll interval. When a path is given, the
+// first snapshot is recorded as exact JSON so any later view can replay it.
+func watch(ctx context.Context, recordPath string, args []string) (repo.Snapshot, live.Fetcher, error) {
 	if len(args) != 1 {
-		return repo.Snapshot{}, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
+		return repo.Snapshot{}, nil, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
 	}
 	owner, name, ok := strings.Cut(args[0], "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return repo.Snapshot{}, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
+		return repo.Snapshot{}, nil, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
 	}
 	token, err := github.ResolveToken(ctx)
 	if err != nil {
-		return repo.Snapshot{}, err
+		return repo.Snapshot{}, nil, err
 	}
 	client, err := github.NewClient(token)
 	if err != nil {
-		return repo.Snapshot{}, err
+		return repo.Snapshot{}, nil, err
 	}
-	snapshot, err := client.BuildSnapshot(ctx, github.DefaultSnapshotOptions(owner, name))
+	opts := github.DefaultSnapshotOptions(owner, name)
+	fetch := func(ctx context.Context) (repo.Snapshot, error) {
+		return client.BuildSnapshot(ctx, opts)
+	}
+	snapshot, err := fetch(ctx)
 	if err != nil {
-		return repo.Snapshot{}, err
+		return repo.Snapshot{}, nil, err
 	}
 	if recordPath != "" {
 		data, err := json.MarshalIndent(snapshot, "", "  ")
 		if err != nil {
-			return repo.Snapshot{}, err
+			return repo.Snapshot{}, nil, err
 		}
 		if err := os.WriteFile(recordPath, append(data, '\n'), 0o600); err != nil {
-			return repo.Snapshot{}, err
+			return repo.Snapshot{}, nil, err
 		}
 	}
-	return snapshot, nil
+	return snapshot, fetch, nil
 }
 
 var palette = []color.Color{lipgloss.Color("#d5ddd9"), lipgloss.Color("#374b4b"), lipgloss.Color("#80d9c0"), lipgloss.Color("#586b70"), lipgloss.Color("#a0dc80"), lipgloss.Color("#f08382"), lipgloss.Color("#f4cf83"), lipgloss.Color("#e5b8ef"), lipgloss.Color("#ffffff")}
@@ -204,23 +221,78 @@ func paint(g scene.Grid, colored bool) string {
 }
 
 type tickMsg struct{}
+type pollMsg struct{}
+type snapshotMsg struct {
+	snap repo.Snapshot
+	err  error
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(125*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+// poll schedules the next live read on GitHub's poll interval.
+func poll() tea.Cmd {
+	return tea.Tick(live.Interval, func(time.Time) tea.Msg { return pollMsg{} })
+}
+
 type model struct {
 	s                              scene.Scene
+	prev, cur                      repo.Snapshot
+	fetch                          live.Fetcher
+	transitionStart                int
+	transiting, refreshFailed      bool
 	frame, width, height, selected int
 	details                        bool
 }
 
-func (m model) Init() tea.Cmd { return tick() }
+func (m model) Init() tea.Cmd {
+	if m.fetch != nil {
+		return tea.Batch(tick(), poll())
+	}
+	return tick()
+}
+
+// fetchCmd runs one bounded live read. It is nil for fixtures and renders, so
+// replayed views never touch the network after their first load.
+func (m model) fetchCmd() tea.Cmd {
+	if m.fetch == nil {
+		return nil
+	}
+	fetch := m.fetch
+	return func() tea.Msg {
+		snap, err := fetch(context.Background())
+		return snapshotMsg{snap: snap, err: err}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case tickMsg:
 		m.frame++
+		if m.transiting && m.frame-m.transitionStart >= scene.TransitionFrames {
+			m.transiting = false
+		}
 		return m, tick()
+	case pollMsg:
+		return m, m.fetchCmd()
+	case snapshotMsg:
+		if v.err != nil {
+			// A failed refresh is a status note, never a fabricated scene.
+			m.refreshFailed = true
+			return m, poll()
+		}
+		m.refreshFailed = false
+		if !live.Equal(m.cur, v.snap) {
+			m.prev, m.cur = m.cur, v.snap
+			m.s = scene.Build(v.snap)
+			m.transitionStart = m.frame
+			m.transiting = true
+			if m.selected >= len(m.s.Marks) {
+				m.selected = 0
+			}
+		}
+		return m, poll()
 	case tea.WindowSizeMsg:
 		m.width = v.Width
 		m.height = v.Height
@@ -246,8 +318,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m model) View() tea.View {
 	s := m.s
+	if m.transiting {
+		s = scene.Transition(m.prev, m.cur, max(0, m.frame-m.transitionStart))
+	}
 	if len(s.Marks) > 0 {
-		mark := s.Marks[m.selected]
+		selected := min(m.selected, len(s.Marks)-1)
+		mark := s.Marks[selected]
 		s.SelectedID = mark.ID
 		count := scene.VisibleLanes(m.width)
 		if mark.Lane < s.FirstLane || mark.Lane >= s.FirstLane+count {
@@ -261,8 +337,12 @@ func (m model) View() tea.View {
 	height := max(0, m.height-reserve)
 	text := paint(scene.Frame(s, m.frame, m.width, height), true)
 	footer := "tab / arrows  ·  enter  ·  q"
+	if m.refreshFailed {
+		footer = "refresh failed; retrying  ·  " + footer
+	}
 	if m.details && len(s.Marks) > 0 {
-		footer = s.Marks[m.selected].Detail + "\n\n" + footer
+		selected := min(m.selected, len(s.Marks)-1)
+		footer = s.Marks[selected].Detail + "\n\n" + footer
 	}
 	footer = lipgloss.NewStyle().Width(max(0, m.width)).MaxWidth(max(0, m.width)).MaxHeight(reserve).Render(footer)
 	if height > 0 {

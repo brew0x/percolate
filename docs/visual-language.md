@@ -19,6 +19,9 @@
 | Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. Where paths share a cell, the cell dims only when every path through it dims. No wall clock is consulted. |
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
+| New bead forming at the top of its lane | Commit added by a refresh | For 32 frames after a live snapshot changes, a commit absent from the previous snapshot drips from the top row down to its recorded rank; its parent paths follow. It draws dim for the first half, then takes its final style. |
+| Finishing run settling | Workflow run completed by a refresh | A run that was running in the previous snapshot and is completed in the new one keeps the frame-indexed pulse for the first half of the 32-frame change, then stops and draws its recorded outcome glyph. |
+| Object fading in place | PR, issue or commit gone after a refresh | An object present in the previous snapshot but absent from the new one draws dim in place through the 32-frame change, then leaves. Its lane is the same branch it belonged to; no closed state is invented. |
 
 Only published releases enter the snapshot: a draft was never published and
 draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
@@ -54,7 +57,10 @@ same scene at the new dimensions.
 
 Palette IDs: 0 plain, 1 lane, 2 fresh, 3 faded, 4 pass, 5 fail, 6 pulse,
 7 release/deployment, 8 selected. A frame is the runes **and** these IDs.
-No mark moves merely to decorate the landscape. Only recorded running CI pulses.
+No mark moves merely to decorate the landscape. Only recorded running CI pulses,
+and only a recorded change between two snapshots animates: a live refresh draws
+the 32-frame transition, then holds exactly the new snapshot. Fixtures and
+`render` never animate a change — they draw one snapshot at the requested frame.
 
 Lanes occupy only recorded commit paths, rather than full-height columns. A
 merged lane ends at its merge path; no merge is inferred from PR state. A newer
