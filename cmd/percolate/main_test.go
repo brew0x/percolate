@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	tea "charm.land/bubbletea/v2"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -262,6 +264,39 @@ func TestRecordedPublicFixtureReplaysToGolden(t *testing.T) {
 				t.Fatal("replay rendered ANSI sequences with --color=false")
 			}
 		})
+	}
+}
+
+// The public recording's provenance must stay checkable in CI: the SHA-256
+// documented in testdata/fixtures/README.md has to match the bytes we replay.
+// A silent edit to the recording (or a stale provenance note) fails here, so
+// the public-recording acceptance for #3 cannot drift without a review.
+func TestRecordedPublicFixtureProvenance(t *testing.T) {
+	const (
+		fixturePath = "../../testdata/fixtures/recorded-hivemq.json"
+		readmePath  = "../../testdata/fixtures/README.md"
+	)
+
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Parse the documented hash from the README so provenance has one source
+	// of truth: editing the fixture without updating the note fails this test.
+	documented := regexp.MustCompile("(?m)\\*\\*SHA-256:\\*\\*\\s+`([0-9a-f]{64})`").
+		FindSubmatch(readme)
+	if documented == nil {
+		t.Fatal("README has no documented SHA-256 for the public recording")
+	}
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(data))
+	if actual != string(documented[1]) {
+		t.Fatalf("public recording changed: documented SHA-256 %s, file hashes to %s",
+			documented[1], actual)
 	}
 }
 
