@@ -7,6 +7,9 @@
 | `●` | Commit | Newest at top, descending timestamp; SHA breaks timestamp ties. Position is global commit rank, not elapsed time; parent endpoints share the same row across lanes. |
 | `◇`, `─`, `▼`, `#N` | Pull request | Diamond at head, path toward base, arrow at base. PR number labels the path. All recorded states retain their path; state and reviews are in details. |
 | `‹`, `›` | Pull request | Base lies beyond this viewport; path continues toward it. |
+| `∿ #N` (fresh) | Open issue with a recorded closing reference | Small spring on the shelf above the pull request's head lane; `N` is the issue number. A dotted `⋮` feed runs down that lane into the pull request's flow, stopping above its diamond. |
+| `⋮` | Closing reference feed | Recorded link from an issue to the pull request whose reference names it. Drawn only in empty cells, so commits and parent paths occlude it rather than merge with it. |
+| `∿` (dim, far-left margin) | Open issue with no recorded closing reference | Sits quietly in the margin with no feed. A closed issue draws nothing. |
 | `◌ ◔ ◑ ◕` | Running workflow run | Four phases, eight frames each, repeating every 32 frames. First half of cycle dims. Applies to any status other than completed. |
 | `✓` | Completed successful workflow | Conclusion success. |
 | `✕` | Completed failed workflow | Conclusion failure, timed_out, or startup_failure. |
@@ -26,6 +29,19 @@ CI sits two columns right of its commit. Releases or runs whose SHA is absent
 use an explicit `unlinked` lane. Commit and PR paths use separate vertical
 regions; releases collect at the bottom. Branch names and object labels truncate
 to their lane width. Plain rendering preserves glyphs while omitting colors.
+
+An issue feeds a pull request only when the snapshot records a closing
+reference naming a pull request that is present; the scene never guesses a link
+from issue text, numbering, or branch names. A dangling reference stays quiet
+like an unlinked issue. Unlinked springs stack down the far-left margin from
+the top; selecting one keeps its spring visible. No issue spring moves with the
+animation frame. Several issues may close one pull request and share its head
+lane: the spring shows the number drawn last (a selected issue draws after the
+others), and a shorter number clears the cells left by a longer one, so no
+fabricated issue number can appear. In a compact frame where the shelf would
+meet the PR's diamond row or its number-label row, the spring sits above the
+lane names and no feed is drawn; neither the diamond nor the label, including a
+selected one, is ever overwritten.
 
 At scale the frame shows as many lanes as fit with at least 14 columns per lane.
 Static renders show the first lanes; navigating marks in the TUI reveals their

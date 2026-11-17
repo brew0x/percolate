@@ -2766,10 +2766,48 @@
       "time": "2026-01-20T11:00:00Z"
     }
   ],
+  "issues": [
+    {
+      "number": 121,
+      "title": "issue 121",
+      "state": "open",
+      "closed_by": 1
+    },
+    {
+      "number": 122,
+      "title": "issue 122",
+      "state": "open",
+      "closed_by": 0
+    },
+    {
+      "number": 123,
+      "title": "issue 123",
+      "state": "open",
+      "closed_by": 3
+    },
+    {
+      "number": 124,
+      "title": "issue 124",
+      "state": "open",
+      "closed_by": 0
+    },
+    {
+      "number": 125,
+      "title": "issue 125",
+      "state": "open",
+      "closed_by": 5
+    },
+    {
+      "number": 126,
+      "title": "issue 126",
+      "state": "open",
+      "closed_by": 0
+    }
+  ],
   "pull_requests": [
     {
       "number": 1,
-      "head": "flow-21",
+      "head": "flow-01",
       "base": "main",
       "state": "open",
       "reviews": [
