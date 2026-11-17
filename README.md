@@ -68,6 +68,14 @@ percolate --fixture testdata/fixtures/small.json
 percolate --fixture testdata/fixtures/busy.json
 ```
 
+There is also a real public recording, captured from an unauthenticated read of
+`hivemq/hivemq-hello-world-datahub-module` (provenance in
+`testdata/fixtures/README.md`). Replay it exactly, offline:
+
+```sh
+percolate --fixture testdata/fixtures/recorded-hivemq.json
+```
+
 Press arrows or tab to select a mark, enter for details, escape to close details,
 and q to quit. Selection reveals offscreen lanes. Resize the terminal freely.
 

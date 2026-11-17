@@ -217,6 +217,54 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	}
 }
 
+// The recording in testdata/fixtures/recorded-hivemq.json came from a real
+// public GitHub repository (see that directory's README). Rendering it through
+// the CLI must reproduce the reviewed golden frame byte for byte: this is the
+// offline replay half of the public-recording acceptance for #3. The scene
+// golden test covers every frame and size; this checks the rendered path people
+// actually run, so an accidental header, color or frame-index change is caught.
+func TestRecordedPublicFixtureReplaysToGolden(t *testing.T) {
+	const fixturePath = "../../testdata/fixtures/recorded-hivemq.json"
+
+	// First confirm this is a real recording, not an httptest-shaped fake.
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.Branches) != 1 || snap.Branches[0].Name != "master" ||
+		len(snap.Commits) != 6 ||
+		snap.Commits[0].SHA != "5e0b579833839b5f254b684049895d08142efa37" ||
+		len(snap.Releases) != 1 || snap.Releases[0].Tag != "1.0.0" ||
+		len(snap.PullRequests) != 0 || len(snap.Runs) != 0 {
+		t.Fatalf("recording lost its real public data: %+v", snap)
+	}
+
+	for _, frame := range []int{0, 7, 30} {
+		t.Run(fmt.Sprintf("frame%02d", frame), func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			args := []string{"render", "--fixture", fixturePath,
+				"--frame", fmt.Sprintf("%d", frame), "--size", "100x30", "--color=false"}
+			if code := run(args, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+			golden, err := os.ReadFile(fmt.Sprintf("../../testdata/golden/recorded-hivemq-100x30-%02d.txt", frame))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != string(golden) {
+				t.Fatalf("replay differs from golden frame %d:\n got:\n%s\nwant:\n%s", frame, out.String(), golden)
+			}
+			if strings.Contains(out.String(), "\x1b") {
+				t.Fatal("replay rendered ANSI sequences with --color=false")
+			}
+		})
+	}
+}
+
 func TestWatchLiveFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")

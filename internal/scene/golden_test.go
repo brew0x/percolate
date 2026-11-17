@@ -30,7 +30,9 @@ func fixture(t testing.TB, name string) repo.Snapshot {
 	return s
 }
 func TestGolden(t *testing.T) {
-	for _, name := range []string{"small", "busy"} {
+	// recorded-hivemq is a real public repository recording (see
+	// testdata/fixtures/README.md); its frames are the replay proof for #3.
+	for _, name := range []string{"small", "busy", "recorded-hivemq"} {
 		for _, size := range [][2]int{{100, 30}, {60, 20}} {
 			for _, frame := range []int{0, 7, 30} {
 				key := fmt.Sprintf("%s-%dx%d-%02d", name, size[0], size[1], frame)
@@ -55,7 +57,7 @@ func TestGolden(t *testing.T) {
 	}
 }
 func TestDeterminism(t *testing.T) {
-	for _, name := range []string{"small", "busy"} {
+	for _, name := range []string{"small", "busy", "recorded-hivemq"} {
 		s := fixture(t, name)
 		before, _ := json.Marshal(s)
 		a := scene.Frame(scene.Build(s), 7, 100, 30)

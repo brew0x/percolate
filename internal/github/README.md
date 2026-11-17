@@ -71,8 +71,12 @@ token, so a mis-set plain-http host must not receive it in cleartext.
 
 Recorded public fixtures (`testdata/fixtures/recorded-*.json`) must come from
 public repositories only, with provenance noted; never commit private repo
-data. Producing the first verified public recording is the remaining open
-part of issue #3.
+data. `testdata/fixtures/recorded-hivemq.json` is the first such recording: a
+real public repository read through unauthenticated GitHub REST, with its
+source and method in `testdata/fixtures/README.md` and replay frames checked
+in `testdata/golden/recorded-hivemq-*`. It closes #3's recording and replay
+acceptance. GitHub's GraphQL details still rest on local fakes: that API needs
+a token, which this recording deliberately did not use.
 
 Tests use local httptest servers and injected credential-helper output. They
 require no GitHub access, real credentials, or changes to rendering.

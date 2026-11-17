@@ -1,0 +1,72 @@
+{
+  "now": "2026-11-17T10:31:14.167639705Z",
+  "branches": [
+    {
+      "name": "master"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "5e0b579833839b5f254b684049895d08142efa37",
+      "parents": [
+        "814ce81cd8c0c814272acb8c53e2a31f4cf1e60d"
+      ],
+      "branch": "master",
+      "author": "David Sondermann",
+      "time": "2026-11-17T10:07:17Z"
+    },
+    {
+      "sha": "814ce81cd8c0c814272acb8c53e2a31f4cf1e60d",
+      "parents": [
+        "87620afa2ed81ae0d294084d00254a8849137a8c"
+      ],
+      "branch": "master",
+      "author": "David Sondermann",
+      "time": "2026-11-17T09:40:50Z"
+    },
+    {
+      "sha": "87620afa2ed81ae0d294084d00254a8849137a8c",
+      "parents": [
+        "83ee68048fdb85ca2fb842cda61262974ecbf368"
+      ],
+      "branch": "master",
+      "author": "David Sondermann",
+      "time": "2026-11-17T09:40:40Z"
+    },
+    {
+      "sha": "83ee68048fdb85ca2fb842cda61262974ecbf368",
+      "parents": [
+        "8b04930d348b69e2898c9b9fe263f9945b94cf4f"
+      ],
+      "branch": "master",
+      "author": "Florian Limpöck",
+      "time": "2024-11-26T13:16:28Z"
+    },
+    {
+      "sha": "8b04930d348b69e2898c9b9fe263f9945b94cf4f",
+      "parents": [
+        "02ee074fd9b2c659c4ded9677e86e91448789a18"
+      ],
+      "branch": "master",
+      "author": "Florian-Limpoeck",
+      "time": "2024-11-25T14:52:05Z"
+    },
+    {
+      "sha": "02ee074fd9b2c659c4ded9677e86e91448789a18",
+      "parents": [],
+      "branch": "master",
+      "author": "Florian Limpöck",
+      "time": "2024-10-30T11:43:44Z"
+    }
+  ],
+  "pull_requests": null,
+  "runs": null,
+  "releases": [
+    {
+      "tag": "1.0.0",
+      "head_sha": "",
+      "time": "2024-11-25T15:15:08Z"
+    }
+  ],
+  "deployments": null
+}
