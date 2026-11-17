@@ -105,9 +105,29 @@ func drawIssues(g Grid, s Scene, v issueView) {
 		if !v.visible(m.Lane) {
 			return
 		}
-		x, y := v.xpos(m.Lane), v.top-1
+		x := v.xpos(m.Lane)
+		y := v.top - 1
+		pr, ok := prByRank[m.Rank]
+		prRow := -1
+		if ok {
+			prRow = min(v.height-4, v.bottom+1+pr.Rank%max(1, v.height-v.bottom-4))
+			if y == prRow || y == prRow-1 {
+				// Compact frame: the shelf shares the PR's diamond row or its
+				// number-label row. Lift the spring above the lane names so it
+				// never overwrites a PR mark, including a selected one. No row
+				// is left for a feed between the lift and the PR, so omit it.
+				y = 1
+			}
+		}
 		put(x, y, issueSpring, style)
 		if v.span >= 5 {
+			// Clear the whole label field before writing. Several issues may
+			// link to the same head lane; a short label drawn over a longer
+			// one would otherwise leave fabricated digits behind (#5 over
+			// #100 reads #500), and selection draws an issue a second time.
+			for i := 0; i < v.span-2; i++ {
+				put(x+1+i, y, ' ', Plain)
+			}
 			for i, r := range []rune(m.Label) {
 				if i >= v.span-2 {
 					break
@@ -115,11 +135,9 @@ func drawIssues(g Grid, s Scene, v issueView) {
 				put(x+1+i, y, r, style)
 			}
 		}
-		pr, ok := prByRank[m.Rank]
 		if !ok {
 			return
 		}
-		prRow := min(v.height-4, v.bottom+1+pr.Rank%max(1, v.height-v.bottom-4))
 		for yy := v.top; yy < prRow && yy < v.height; yy++ {
 			if g[yy][x].Rune == ' ' {
 				put(x, yy, issueFeed, LaneStyle)

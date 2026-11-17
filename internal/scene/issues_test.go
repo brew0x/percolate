@@ -110,3 +110,132 @@ func TestSelectedIssueDrawsLast(t *testing.T) {
 		t.Fatalf("selected issue not inspectable: %q", got)
 	}
 }
+
+func springX(t *testing.T, row []scene.Cell) int {
+	t.Helper()
+	for x, c := range row {
+		if c.Rune == '∿' {
+			return x
+		}
+	}
+	t.Fatal("no spring in row")
+	return 0
+}
+
+// At height 8 the shelf meets the PR's number-label row instead of its
+// diamond row. The label must survive just as the diamond does at height 7.
+func TestLinkedSpringKeepsPRLabelInCompactFrame(t *testing.T) {
+	s := repo.Snapshot{
+		Branches:     []repo.Branch{{Name: "main"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 5, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	g := scene.Frame(scene.Build(s), 0, 60, 8)
+	prX := -1
+	for x, c := range g[4] {
+		if c.Rune == '◇' {
+			prX = x
+			break
+		}
+	}
+	if prX < 0 {
+		t.Fatalf("PR diamond missing:\n%s", g.String())
+	}
+	if g[3][prX].Rune != ' ' || g[3][prX+1].Rune != '#' || g[3][prX+2].Rune != '1' || g[3][prX+3].Rune != '2' {
+		t.Fatalf("PR number label erased by spring:\n%s", g.String())
+	}
+	if got := g[1][prX]; got.Rune != '∿' {
+		t.Fatalf("linked spring not visible above compact PR: %q\n%s", got, g.String())
+	}
+}
+
+// Several open issues may record closing references to the same pull request
+// and share its head lane. A shorter label drawn over a longer one must clear
+// the cells it replaces: #5 over #100 may never read as the phantom #500,
+// whether the shorter issue is selected or not.
+func TestOverlappingSpringLabels(t *testing.T) {
+	s := repo.Snapshot{
+		Branches:     []repo.Branch{{Name: "main"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues: []repo.Issue{
+			{Number: 100, Title: "long", State: "open", ClosedBy: 12},
+			{Number: 5, Title: "short", State: "open", ClosedBy: 12},
+		},
+	}
+	cases := []struct {
+		name, selected, want string
+		style                scene.Style
+	}{
+		{"snapshot order", "", "#5", scene.Fresh},
+		{"shorter selected", "issue:5", "#5", scene.Selected},
+		{"longer selected", "issue:100", "#100", scene.Selected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			built := scene.Build(s)
+			built.SelectedID = tc.selected
+			g := scene.Frame(built, 0, 60, 20)
+			x := springX(t, g[3])
+			if got := g[3][x]; got.Rune != '∿' || got.Style != tc.style {
+				t.Fatalf("spring at head lane wrong: %q", got)
+			}
+			for i, r := range []rune(tc.want) {
+				if got := g[3][x+1+i]; got.Rune != r || got.Style != tc.style {
+					t.Fatalf("spring label %q cell %d = %q", tc.want, i, got)
+				}
+			}
+			// span-2 = 26 label cells at this size; every cell past the label
+			// must be blank, with no tail left by the longer number.
+			for xx := x + 1 + len(tc.want); xx <= x+26; xx++ {
+				if got := g[3][xx]; got.Rune != ' ' {
+					t.Fatalf("fabricated digit %q after %q", got.Rune, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// A supported compact frame (height 7) puts the shelf on the PR row. The
+// spring must lift clear of the diamond, including a selected one, instead of
+// overwriting it; it still has to be visible and numbered.
+func TestLinkedSpringDoesNotErasePRInCompactFrame(t *testing.T) {
+	s := repo.Snapshot{
+		Branches:     []repo.Branch{{Name: "main"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 5, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	cases := []struct {
+		name, selected  string
+		prStyle, spring scene.Style
+	}{
+		{"plain", "", scene.Fresh, scene.Fresh},
+		{"selected PR", "pr:12", scene.Selected, scene.Fresh},
+		{"selected issue", "issue:5", scene.Fresh, scene.Selected},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			built := scene.Build(s)
+			built.SelectedID = tc.selected
+			g := scene.Frame(built, 0, 60, 7)
+			prX := -1
+			for x, c := range g[3] {
+				if c.Rune == '◇' {
+					prX = x
+					break
+				}
+			}
+			if prX < 0 {
+				t.Fatalf("PR diamond missing:\n%s", g.String())
+			}
+			if got := g[3][prX]; got.Style != tc.prStyle {
+				t.Fatalf("PR diamond restyled by spring: %q\n%s", got, g.String())
+			}
+			if got := g[1][prX]; got.Rune != '∿' || got.Style != tc.spring {
+				t.Fatalf("linked spring not visible above compact PR: %q\n%s", got, g.String())
+			}
+			if g[1][prX+1].Rune != '#' || g[1][prX+2].Rune != '5' {
+				t.Fatalf("compact spring label wrong:\n%s", g.String())
+			}
+		})
+	}
+}

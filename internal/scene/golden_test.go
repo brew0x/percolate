@@ -33,7 +33,9 @@ func TestGolden(t *testing.T) {
 	// recorded-hivemq is a real public repository recording (see
 	// testdata/fixtures/README.md); its frames are the replay proof for #3.
 	for _, name := range []string{"small", "busy", "recorded-hivemq"} {
-		for _, size := range [][2]int{{100, 30}, {60, 20}} {
+		// 60x7 is a supported compact frame: its shelf shares the PR row, so
+		// these frames review that the spring lifts clear of the diamond.
+		for _, size := range [][2]int{{100, 30}, {60, 20}, {60, 7}} {
 			for _, frame := range []int{0, 7, 30} {
 				key := fmt.Sprintf("%s-%dx%d-%02d", name, size[0], size[1], frame)
 				t.Run(key, func(t *testing.T) {
@@ -148,7 +150,7 @@ func BenchmarkBusyFrame(b *testing.B) {
 }
 func TestNarrowFrames(t *testing.T) {
 	s := scene.Build(fixture(t, "busy"))
-	for _, size := range [][2]int{{0, 0}, {1, 1}, {4, 6}, {5, 7}, {60, 20}} {
+	for _, size := range [][2]int{{0, 0}, {1, 1}, {4, 6}, {5, 7}, {60, 7}, {60, 20}} {
 		g := scene.Frame(s, -1, size[0], size[1])
 		if len(g) != size[1] {
 			t.Fatal("height")
@@ -158,6 +160,25 @@ func TestNarrowFrames(t *testing.T) {
 				t.Fatal("width")
 			}
 		}
+	}
+	// At height 7 the busy snapshot has a linked spring on a visible head
+	// lane. Its shelf shares the PR row, so the diamond must survive and no
+	// spring may be left on that row; the spring moves above the lane names.
+	compact := scene.Frame(s, -1, 60, 7)
+	diamonds, shelfSprings, liftedSprings := 0, 0, 0
+	for x, c := range compact[3] {
+		if c.Rune == '◇' {
+			diamonds++
+		}
+		if c.Rune == '∿' {
+			shelfSprings++
+		}
+		if compact[1][x].Rune == '∿' {
+			liftedSprings++
+		}
+	}
+	if diamonds == 0 || shelfSprings != 0 || liftedSprings == 0 {
+		t.Fatalf("compact spring/PR collision:\n%s", compact.String())
 	}
 }
 

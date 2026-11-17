@@ -35,7 +35,13 @@ reference naming a pull request that is present; the scene never guesses a link
 from issue text, numbering, or branch names. A dangling reference stays quiet
 like an unlinked issue. Unlinked springs stack down the far-left margin from
 the top; selecting one keeps its spring visible. No issue spring moves with the
-animation frame.
+animation frame. Several issues may close one pull request and share its head
+lane: the spring shows the number drawn last (a selected issue draws after the
+others), and a shorter number clears the cells left by a longer one, so no
+fabricated issue number can appear. In a compact frame where the shelf would
+meet the PR's diamond row or its number-label row, the spring sits above the
+lane names and no feed is drawn; neither the diamond nor the label, including a
+selected one, is ever overwritten.
 
 At scale the frame shows as many lanes as fit with at least 14 columns per lane.
 Static renders show the first lanes; navigating marks in the TUI reveals their
