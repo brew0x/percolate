@@ -444,6 +444,12 @@ func TestDepartingHeadDiamondDoesNotSuppressCoveredReviewMark(t *testing.T) {
 	surviving := repo.PullRequest{Number: 2, Head: "w2", Base: "w1", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}}
 	prev := repo.Snapshot{Now: day, Branches: branches, PullRequests: []repo.PullRequest{departing, surviving}}
 	next := repo.Snapshot{Now: day.Add(time.Minute), Branches: branches, PullRequests: []repo.PullRequest{surviving}}
+	// The overlap is real: on its own, the departing w1 -> main PR draws its
+	// diamond at w1, the cell where the surviving flow later converges.
+	alone := repo.Snapshot{Now: day, Branches: branches, PullRequests: []repo.PullRequest{departing}}
+	if got := scene.Frame(scene.Build(alone), 0, 60, 7)[3][21]; got.Rune != '◇' {
+		t.Fatalf("departing diamond does not occupy w1: %q", got)
+	}
 	for _, selected := range []string{"", "pr:1", "pr:2"} {
 		for _, frame := range []int{0, 16, 31} {
 			built := scene.Transition(prev, next, frame)
