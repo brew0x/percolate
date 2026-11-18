@@ -66,7 +66,11 @@ From a checkout, open the bundled fictional landscapes:
 ```sh
 percolate --fixture testdata/fixtures/small.json
 percolate --fixture testdata/fixtures/busy.json
+percolate --fixture testdata/fixtures/scale.json
 ```
+
+`scale.json` is a fictional 500-PR landscape; its golden frames and 5 ms frame
+budget are checked in CI alongside the smaller ones.
 
 There is also a real public recording, captured from an unauthenticated read of
 `hivemq/hivemq-hello-world-datahub-module` (provenance in

@@ -11,3 +11,6 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make check
+      # Frame cost is also asserted as a 5 ms budget inside make check; this
+      # step prints the measured busy and 500-PR frame numbers in the log.
+      - run: go test ./internal/scene -run '^$' -bench 'BenchmarkBusyFrame|BenchmarkScaleFrame' -benchtime=200x -benchmem

@@ -26,7 +26,13 @@ func main() {
 	small := fixturegen.Generate(8, 3, 12, 1, 2)
 	small.Runs[1].Conclusion = "failure"
 	small.Runs[1].Jobs[0].Conclusion = "failure"
-	for name, s := range map[string]any{"small": small, "busy": fixturegen.Generate(42, 40, 300, 120, 200)} {
+	for name, s := range map[string]any{
+		"small": small,
+		"busy":  fixturegen.Generate(42, 40, 300, 120, 200),
+		// Same seeded landscape with hundreds of pull requests in flight;
+		// the at-scale replay proof for #9.
+		"scale": fixturegen.Generate(42, 40, 300, 500, 200),
+	} {
 		data, err := json.MarshalIndent(s, "", "  ")
 		if err != nil {
 			panic(err)

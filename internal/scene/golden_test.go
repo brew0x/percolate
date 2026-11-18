@@ -32,7 +32,7 @@ func fixture(t testing.TB, name string) repo.Snapshot {
 func TestGolden(t *testing.T) {
 	// recorded-hivemq is a real public repository recording (see
 	// testdata/fixtures/README.md); its frames are the replay proof for #3.
-	for _, name := range []string{"small", "busy", "jobs", "recorded-hivemq"} {
+	for _, name := range []string{"small", "busy", "scale", "jobs", "recorded-hivemq"} {
 		// 60x7 is a supported compact frame: its shelf shares the PR row, so
 		// these frames review that the spring lifts clear of the diamond.
 		for _, size := range [][2]int{{100, 30}, {60, 20}, {60, 7}} {
@@ -76,7 +76,7 @@ func TestBusyReplayShowsEveryReviewMark(t *testing.T) {
 	}
 }
 func TestDeterminism(t *testing.T) {
-	for _, name := range []string{"small", "busy", "jobs", "recorded-hivemq"} {
+	for _, name := range []string{"small", "busy", "scale", "jobs", "recorded-hivemq"} {
 		s := fixture(t, name)
 		before, _ := json.Marshal(s)
 		a := scene.Frame(scene.Build(s), 7, 100, 30)
@@ -165,6 +165,29 @@ func BenchmarkBusyFrame(b *testing.B) {
 		scene.Frame(s, i, 100, 30)
 	}
 }
+
+// The 500-PR landscape is the scale budget from #9: a frame must stay well
+// under 5 ms so a live terminal keeps its cadence. The test below enforces
+// that bound inside make check (and therefore CI); the benchmark reports the
+// measured cost for the same scene.
+func TestScaleRenderBudget(t *testing.T) {
+	s := scene.Build(fixture(t, "scale"))
+	const frames = 40
+	start := time.Now()
+	for i := 0; i < frames; i++ {
+		scene.Frame(s, i, 100, 30)
+	}
+	if average := time.Since(start) / frames; average > 5*time.Millisecond {
+		t.Fatalf("average scale frame %s exceeds 5 ms bound", average)
+	}
+}
+func BenchmarkScaleFrame(b *testing.B) {
+	s := scene.Build(fixture(b, "scale"))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scene.Frame(s, i, 100, 30)
+	}
+}
 func TestNarrowFrames(t *testing.T) {
 	s := scene.Build(fixture(t, "busy"))
 	for _, size := range [][2]int{{0, 0}, {1, 1}, {4, 6}, {5, 7}, {60, 7}, {60, 20}} {
@@ -225,6 +248,13 @@ func TestGeneratedFixture(t *testing.T) {
 	}
 	if !reflect.DeepEqual(recorded, fixturegen.Generate(42, 40, 300, 120, 200)) {
 		t.Fatal("recorded fixture no longer matches its seed")
+	}
+	scale := fixture(t, "scale")
+	if len(scale.Branches) != 40 || len(scale.Commits) != 300 || len(scale.PullRequests) != 500 || len(scale.Runs) != 200 {
+		t.Fatal("scale fixture shape changed")
+	}
+	if !reflect.DeepEqual(scale, fixturegen.Generate(42, 40, 300, 500, 200)) {
+		t.Fatal("scale fixture no longer matches its seed")
 	}
 	small := fixture(t, "small")
 	if len(small.Branches) != 3 || len(small.Commits) != 12 || len(small.PullRequests) != 1 || len(small.Runs) != 2 || len(small.Releases) != 1 {

@@ -66,9 +66,10 @@ func buildIssues(s repo.Snapshot, addLane func(string) int) []Mark {
 // issueView is the part of Frame's geometry the issue layer needs. Springs
 // share the lane x positions with commits, but live on the shelf above them.
 type issueView struct {
-	width, height, top, bottom, span int
-	xpos                             func(int) int
-	visible                          func(int) bool
+	width, height, top, bottom int
+	widthOf                    func(int) int
+	xpos                       func(int) int
+	visible                    func(int) bool
 }
 
 // drawIssues draws the issue layer last. Linked springs sit above the head
@@ -154,17 +155,17 @@ func drawIssues(g Grid, s Scene, v issueView) {
 			// draws nothing around it; it reappears whole once the cell frees.
 			return
 		}
-		if v.span >= 5 {
+		if labelWidth := v.widthOf(m.Lane) - 2; labelWidth >= 3 {
 			// Clear the label field the layer owns before writing. Several
 			// issues may link to the same head lane; a short label drawn over
 			// a longer one would otherwise leave fabricated digits behind (#5
 			// over #100 reads #500), and selection draws an issue a second
 			// time.
-			for i := 0; i < v.span-2; i++ {
+			for i := 0; i < labelWidth; i++ {
 				put(x+1+i, y, ' ', Plain)
 			}
 			for i, r := range []rune(m.Label) {
-				if i >= v.span-2 {
+				if i >= labelWidth {
 					break
 				}
 				if !put(x+1+i, y, r, style) {
