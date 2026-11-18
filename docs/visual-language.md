@@ -11,17 +11,18 @@
 | `∿ #N` (fresh) | Open issue with a recorded closing reference | Small spring on the shelf above the pull request's head lane; `N` is the issue number. A dotted `⋮` feed runs down that lane into the pull request's flow, stopping above its diamond. The layer draws last but only fills cells that are empty or its own: a commit dripping through the shelf during a change keeps the cell, and the spring reappears whole once the cell frees. |
 | `⋮` | Closing reference feed | Recorded link from an issue to the pull request whose reference names it. Drawn only in empty cells, so commits and parent paths occlude it rather than merge with it. A pull request that is leaving the scene answers only its own fading issue's reference; a departed pull request never carries a surviving issue's feed. |
 | `∿` (dim, far-left margin) | Open issue with no recorded closing reference | Sits quietly in the margin with no feed. A closed issue draws nothing. |
-| `◌ ◔ ◑ ◕` | Running workflow run | Four phases, eight frames each, repeating every 32 frames. First half of cycle dims. Applies to any status other than completed. |
-| `✓` | Completed successful workflow | Conclusion success. |
-| `✕` | Completed failed workflow | Conclusion failure, timed_out, or startup_failure. |
-| `−` | Other completed workflow | Cancelled, skipped, neutral, or another conclusion; never implies success. |
+| `◌ ◔ ◑ ◕` | Running workflow run or job | Four phases, eight frames each, repeating every 32 frames. First half of cycle dims. Applies to any status other than completed. |
+| `✓` | Completed successful workflow or job | Conclusion success. |
+| `✕` | Completed failed workflow or job | Conclusion failure, timed_out, or startup_failure. |
+| `−` | Other completed workflow or job | Cancelled, skipped, neutral, or another conclusion; never implies success. |
+| Job cells two columns right of a commit | A workflow run's recorded jobs | A run with a recorded job list breaks into one cell per job in snapshot order; each uses its own recorded status and conclusion, so a running job pulses while a finished job beside it holds its outcome. A run without a recorded job list keeps one aggregate mark. If more jobs are recorded than fit before the next lane, the last cell carries a failure mark when a displaced job failed, otherwise the run's own outcome, so a hidden failure is never invisible. |
 | `◆ tag` | Release | At the bottom of the lane containing its head commit. |
 | `▣ environment` | Deployment | At the bottom of the lane containing its head commit; state in details. |
 | Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. Where paths share a cell, the cell dims only when every path through it dims. No wall clock is consulted. |
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. A refresh keeps the same object selected when it still exists, so the highlight and any open details never jump to a different object on their own. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
 | New bead forming at the top of its lane | Commit added by a refresh | For 32 frames after a live snapshot changes, a commit absent from the previous snapshot drips toward its recorded row; its parent paths and any CI anchored to it follow. It draws dim for the first half, then takes its final style. A commit landing below the top starts at the top row; a newest commit (recorded rank 0) starts one row above the commit region, clear of the lane names, so it visibly falls in instead of sitting still. The offset applies even to a repository's first commit, where rank alone is ignored. |
-| Finishing run settling | Workflow run completed by a refresh | A run that was running in the previous snapshot and is completed in the new one keeps the frame-indexed pulse for the first half of the 32-frame change, then stops and draws its recorded outcome glyph. A run still running in the new snapshot keeps pulsing for the whole change; no run freezes on a still glyph mid-transition. |
+| Finishing run settling | Workflow run completed by a refresh | A run that was running in the previous snapshot and is completed in the new one keeps the frame-indexed pulse for the first half of the 32-frame change, then stops and draws its recorded outcome glyph. Its recorded jobs settle with it: a job unfinished in the previous snapshot pulses alongside the run, while a job already completed keeps its recorded outcome throughout. A run still running in the new snapshot keeps pulsing for the whole change; no run freezes on a still glyph mid-transition. |
 | Object fading in place | PR, issue or commit gone after a refresh | An object present in the previous snapshot but absent from the new one draws dim in place through the 32-frame change, then leaves. Its lane is the same branch it belonged to; a lane removed in the new snapshot is kept under its own name for the fade, so nothing vanishes off-screen or drifts onto another branch. Only real lanes are kept: a mark that has no lane of its own (an unlinked issue's margin spring, or any mark's unused base) never brings a removed branch back. Fading marks draw beneath the surviving ones, so a cell shared with something that stays belongs to what stays — including a surviving flow's path under a departing review mark — except a convergence cell joining differing review states, which keeps its plain path until the fading flow is gone. No closed state is invented. |
 
 Only published releases enter the snapshot: a draft was never published and
@@ -29,7 +30,8 @@ draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
 (for example `alice:main`), so its commit never joins the upstream lane of the
 same branch name.
 
-CI sits two columns right of its commit. Releases or runs whose SHA is absent
+CI sits two columns right of its commit; a run with recorded jobs extends that
+strip one cell per job in snapshot order. Releases or runs whose SHA is absent
 use an explicit `unlinked` lane. Commit and PR paths use separate vertical
 regions; releases collect at the bottom. Branch names and object labels truncate
 to their lane width. Plain rendering preserves glyphs while omitting colors.
@@ -80,7 +82,8 @@ commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
 Details report only recorded fields: a run without a recorded job list says
 `jobs not recorded` rather than a numeric zero, and a deployment without a
-recorded state leaves it blank. A pull request lists its recorded reviews and
+recorded state leaves it blank. A run that records failing jobs names them in
+its details (`failing: test, lint`), matching the fail cells in its job strip. A pull request lists its recorded reviews and
 adds the resolved review state (`reviews: waiting`, `reviews: approved`,
 `reviews: changes requested`) — the same fact its convergence mark draws. A pull request shows at most the ten most
 recent recorded reviews; older reviews are not present in the snapshot, so the

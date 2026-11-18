@@ -62,7 +62,9 @@ Not read in this slice: per-run job lists and per-deployment statuses (both
 are unbounded per-object fan-outs; run details and deployment state stay
 empty rather than guessed). Workflow-run jobs are recorded only when a
 snapshot was made by a source that included them; run details then say
-`jobs not recorded` rather than a numeric zero.
+`jobs not recorded` rather than a numeric zero. A snapshot that does carry
+jobs renders one mark per job beside the run, and run details name the
+failing jobs.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
 local servers; also the seam for a future GitHub Enterprise host). It must be

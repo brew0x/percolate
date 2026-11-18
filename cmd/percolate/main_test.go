@@ -93,6 +93,28 @@ func TestRunDetailsWithoutJobs(t *testing.T) {
 	}
 }
 
+// Enter on a run with recorded jobs names the failing jobs in the detail
+// panel, so the fail cell in the strip is explainable without colour.
+func TestRunDetailsListFailingJobs(t *testing.T) {
+	m := model{s: scene.Build(repo.Snapshot{Runs: []repo.WorkflowRun{{
+		ID: 7, HeadSHA: "abc", Status: "completed", Conclusion: "failure",
+		Jobs: []repo.Job{
+			{Name: "build", Status: "completed", Conclusion: "success"},
+			{Name: "test", Status: "completed", Conclusion: "failure"},
+			{Name: "lint", Status: "completed", Conclusion: "timed_out"},
+		},
+	}}}), width: 200, height: 20}
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(model)
+	content := m.View().Content
+	if !strings.Contains(content, "failing: test, lint") {
+		t.Fatalf("run details did not name failing jobs: %q", content)
+	}
+	if strings.Contains(content, "failing: build") {
+		t.Fatalf("successful job named as failing: %q", content)
+	}
+}
+
 func TestReorderArgs(t *testing.T) {
 	for _, tt := range []struct {
 		in, want []string

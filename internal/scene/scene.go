@@ -64,6 +64,10 @@ type Mark struct {
 	// Build from its recorded reviews; other kinds carry the zero value
 	// (waiting), which only the pull-request drawing consults.
 	Review ReviewState
+	// Jobs holds one mark per recorded workflow job. It is empty when the
+	// snapshot has no job list, so Frame falls back to the run's aggregate
+	// glyph; an explicitly empty list also draws no job cells.
+	Jobs []JobMark
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.
@@ -161,27 +165,7 @@ func Build(s repo.Snapshot) Scene {
 	}
 	// Issues follow PRs so a closing reference resolves to the same head lane.
 	out.Marks = append(out.Marks, buildIssues(s, addLane)...)
-	for _, r := range s.Runs {
-		anchor, ok := bySHA[r.HeadSHA]
-		if !ok {
-			anchor = Mark{Lane: addLane("unlinked"), Total: 1}
-		}
-		glyph, style := RunGlyph(r.Conclusion), Pass
-		if r.Conclusion != "success" {
-			style = Fail
-		}
-		running := r.Status != "completed"
-		if running {
-			glyph, style = '◌', Pulse
-		}
-		// A nil Jobs slice means the snapshot source never recorded jobs; a
-		// numeric zero would state a fact the snapshot does not contain.
-		jobs := "jobs not recorded"
-		if r.Jobs != nil {
-			jobs = fmt.Sprintf("%d jobs", len(r.Jobs))
-		}
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("run:%d", r.ID), Kind: "run", Label: fmt.Sprintf("CI %d", r.ID), Detail: fmt.Sprintf("run %d · %s · %s · %s · %s", r.ID, r.Status, r.Conclusion, jobs, r.HeadSHA), Lane: anchor.Lane, Rank: anchor.Rank, Total: anchor.Total, Glyph: glyph, Style: style, Running: running})
-	}
+	out.Marks = append(out.Marks, buildRuns(s, bySHA, addLane)...)
 	for _, r := range s.Releases {
 		anchor, ok := bySHA[r.HeadSHA]
 		if !ok {
@@ -203,26 +187,6 @@ func short(s string) string {
 		return s[:7]
 	}
 	return s
-}
-
-// RunGlyph keeps success, failure, and other completed outcomes distinct.
-func RunGlyph(conclusion string) rune {
-	switch conclusion {
-	case "success":
-		return '✓'
-	case "failure", "timed_out", "startup_failure":
-		return '✕'
-	default:
-		return '−'
-	}
-}
-
-// pulseGlyph is the four-phase, eight-frame-per-phase running signal. Both
-// Frame and Transition use it so a live settle and a still frame pulse alike.
-func pulseGlyph(frame int) rune {
-	cycle := []rune{'◌', '◔', '◑', '◕'}
-	i := (((frame % 32) + 32) % 32) / 8
-	return cycle[i]
 }
 
 // VisibleLanes is shared by viewport navigation and rendering.
@@ -472,6 +436,12 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			put(x, y, m.Glyph, style)
 			label(x+2, y, m.Label, span-3, style)
 		case "run":
+			if cells := runCells(m, frameIndex, max(1, span-2), selected); len(cells) > 0 {
+				for i, c := range cells {
+					put(x+2+i, y, c.Rune, c.Style)
+				}
+				return
+			}
 			glyph := m.Glyph
 			if m.Running {
 				glyph = pulseGlyph(frameIndex)
