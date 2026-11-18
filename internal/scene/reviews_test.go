@@ -348,3 +348,40 @@ func TestCrossingPathDoesNotEraseReviewMark(t *testing.T) {
 		t.Fatalf("selected PR lost its own waiting mark: %q\n%s", got, g)
 	}
 }
+
+// A departing review mark draws beneath a surviving flow's path. At 60x7 a
+// changes-requested w3 -> w1 PR fades out while an approved w2 -> main PR
+// survives; the survivor's path crosses w1, and the dim request must not be
+// painted over the middle of that path, selected or not. The fading flow is
+// still drawn where nothing survives over it.
+func TestDepartingMarkDoesNotCrossSurvivingPath(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	branches := []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}, {Name: "w3"}}
+	changes := repo.PullRequest{Number: 1, Head: "w3", Base: "w1", State: "open", Reviews: []repo.Review{{Author: "sage", State: "changes_requested"}}}
+	approved := repo.PullRequest{Number: 2, Head: "w2", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}}
+	prev := repo.Snapshot{Now: day, Branches: branches, PullRequests: []repo.PullRequest{changes, approved}}
+	next := repo.Snapshot{Now: day.Add(time.Minute), Branches: branches, PullRequests: []repo.PullRequest{approved}}
+
+	for _, selected := range []bool{false, true} {
+		for _, frame := range []int{0, 16, 31} {
+			built := scene.Transition(prev, next, frame)
+			if selected {
+				built.SelectedID = "pr:2"
+			}
+			g := scene.Frame(built, frame, 60, 7)
+			// Row 3 is shared by every flow at this compact height. The
+			// survivor's path runs from main (col 3) to w2 (col 31), crossing
+			// w1 (col 17) where the departing request's arrow used to land.
+			wantStyle := scene.Fresh
+			if selected {
+				wantStyle = scene.Selected
+			}
+			if got := g[3][17]; got.Rune != '─' || got.Style != wantStyle {
+				t.Fatalf("selected=%v frame %d: departing mark crossed the surviving path: %q\n%s", selected, frame, got, g)
+			}
+			if got := g[3][45]; got.Rune != '◇' || got.Style != scene.Faded {
+				t.Fatalf("selected=%v frame %d: departing diamond lost: %q\n%s", selected, frame, got, g)
+			}
+		}
+	}
+}

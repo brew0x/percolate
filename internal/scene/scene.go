@@ -458,30 +458,40 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			put(x, y, m.Glyph, style)
 		}
 	}
-	// Every PR path goes down before any mark, so a crossing path cannot
-	// erase another flow's arrow, diamond or number label. The selected path
-	// goes after the other paths but still before every mark, so its whole
-	// flow keeps the selected style without covering a settled flow's mark.
-	for _, m := range s.Marks {
-		if m.Kind == "pr" && m.ID != s.SelectedID {
-			draw(m, false, true)
+	// Draw in two layers, fading first and surviving second, so everything
+	// leaving the scene sits beneath everything that stays. Within a layer,
+	// every PR path goes down before any mark, so a crossing path cannot erase
+	// another flow's arrow, diamond or number label; the selected path goes
+	// after the other paths but still before every mark, so its whole flow
+	// keeps the selected style without covering another flow's mark. The
+	// layering matters for a departing PR whose convergence mark sits on a
+	// surviving flow's path: drawing the fading layer first lets that path
+	// keep the cell instead of being crossed out by a dim arrow that is on
+	// its way out.
+	drawLayer := func(departing bool) {
+		for _, m := range s.Marks {
+			if m.Kind == "pr" && m.Departing == departing && m.ID != s.SelectedID {
+				draw(m, false, true)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Kind == "pr" && m.Departing == departing && m.ID == s.SelectedID {
+				draw(m, true, true)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Departing == departing && m.ID != s.SelectedID {
+				draw(m, false, false)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Departing == departing && m.ID == s.SelectedID {
+				draw(m, true, false)
+			}
 		}
 	}
-	for _, m := range s.Marks {
-		if m.Kind == "pr" && m.ID == s.SelectedID {
-			draw(m, true, true)
-		}
-	}
-	for _, m := range s.Marks {
-		if m.ID != s.SelectedID {
-			draw(m, false, false)
-		}
-	}
-	for _, m := range s.Marks {
-		if m.ID == s.SelectedID {
-			draw(m, true, false)
-		}
-	}
+	drawLayer(true)
+	drawLayer(false)
 	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, span: span, xpos: xpos, visible: visible})
 	return g
 }
