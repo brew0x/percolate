@@ -39,6 +39,22 @@ type Job struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 }
+
+// Running reports whether the recorded job has not completed. A missing
+// status is treated as unfinished, like a run's status, so an old snapshot
+// never freezes a job on a success glyph it did not record.
+func (j Job) Running() bool { return j.Status != "completed" }
+
+// Failed reports whether the recorded conclusion is a failure. Cancelled,
+// skipped and neutral jobs are not failures; they keep the neutral mark.
+func (j Job) Failed() bool {
+	switch j.Conclusion {
+	case "failure", "timed_out", "startup_failure":
+		return true
+	}
+	return false
+}
+
 type WorkflowRun struct {
 	ID         int64  `json:"id"`
 	HeadSHA    string `json:"head_sha"`

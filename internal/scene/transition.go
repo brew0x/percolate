@@ -172,8 +172,26 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 			m.Glyph = pulseGlyph(frame)
 			m.Running = true
 			m.Style = Pulse
+			// The finishing run keeps pulsing, but only jobs that were
+			// unfinished in prev join it: a job already completed keeps its
+			// recorded outcome throughout.
+			oldJobs := make(map[string]repo.Job, len(old.Jobs))
+			for _, j := range old.Jobs {
+				oldJobs[j.Name] = j
+			}
+			for j := range m.Jobs {
+				if j >= len(newRun.Jobs) {
+					continue
+				}
+				if was, ok := oldJobs[newRun.Jobs[j].Name]; ok && was.Running() {
+					m.Jobs[j].Glyph = '◌'
+					m.Jobs[j].Style = Pulse
+					m.Jobs[j].Running = true
+				}
+			}
 		} else {
-			m.Running = false // Build(next) already holds the final glyph/style.
+			// Build(next) already holds the final run and job glyph/styles.
+			m.Running = false
 		}
 	}
 

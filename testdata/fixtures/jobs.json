@@ -1,0 +1,108 @@
+{
+  "now": "2026-01-20T12:00:00Z",
+  "branches": [
+    {
+      "name": "main"
+    },
+    {
+      "name": "tests"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "0000000100000000000000000000000000000001",
+      "parents": [],
+      "branch": "main",
+      "author": "robin",
+      "time": "2026-01-20T11:00:00Z"
+    },
+    {
+      "sha": "0000000300000000000000000000000000000003",
+      "parents": [
+        "0000000200000000000000000000000000000002"
+      ],
+      "branch": "tests",
+      "author": "sage",
+      "time": "2026-01-20T10:00:00Z"
+    },
+    {
+      "sha": "0000000200000000000000000000000000000002",
+      "parents": [
+        "0000000100000000000000000000000000000001"
+      ],
+      "branch": "main",
+      "author": "robin",
+      "time": "2026-01-20T09:00:00Z"
+    }
+  ],
+  "issues": [],
+  "pull_requests": [],
+  "runs": [
+    {
+      "id": 1,
+      "head_sha": "0000000100000000000000000000000000000001",
+      "status": "in_progress",
+      "conclusion": "",
+      "jobs": [
+        {
+          "name": "build",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "test",
+          "status": "in_progress",
+          "conclusion": ""
+        },
+        {
+          "name": "lint",
+          "status": "queued",
+          "conclusion": ""
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "head_sha": "0000000200000000000000000000000000000002",
+      "status": "completed",
+      "conclusion": "failure",
+      "jobs": [
+        {
+          "name": "build",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "test",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "deploy",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "head_sha": "0000000300000000000000000000000000000003",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "build",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "test",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "releases": [],
+  "deployments": []
+}

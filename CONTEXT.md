@@ -6,6 +6,7 @@
 - **Flow** — a pull request's path from head branch into base branch.
 - **Spring** — an open issue waiting at the top of a lane, feeding a pull request only when a recorded closing reference names it.
 - **Pulse** — a running workflow's repeating, frame-indexed signal.
+- **Job strip** — the cells beside a run's commit, one per recorded job.
 - **Fade** — a dimmer style for a commit older than 48 snapshot hours.
 - **Mark** — a visible object symbol with its recorded identity and details.
 - **Snapshot** — JSON-serialisable repository state with an explicit now.
