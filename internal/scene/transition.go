@@ -186,6 +186,13 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 	}
 	remap := make(map[int]int, len(prevBuilt.Lanes))
 	remapLane := func(i int) int {
+		if i < 0 || i >= len(prevBuilt.Lanes) {
+			// Build never emits an out-of-range lane, but Transition is
+			// exported and pure over snapshots: an unlinked issue's margin
+			// placeholder can be the only Lane a snapshot holds, and a legal
+			// snapshot must not crash the renderer.
+			return i
+		}
 		if j, ok := remap[i]; ok {
 			return j
 		}
@@ -214,8 +221,20 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 			continue
 		}
 		m.Departing = true
+		// Only genuine lane indices are remapped. Base holds a lane for a
+		// pull request and for a linked issue; every other kind carries the
+		// unused zero value there, and an unlinked issue keeps a margin
+		// placeholder in Lane with a negative Base. Remapping those would
+		// re-invent a removed lane that no fading mark actually draws on.
+		if m.Kind == "issue" && m.Base < 0 {
+			// Margin placeholder, not a lane; the spring draws at the margin
+			// regardless of Lane.
+			m.Style = Faded
+			leaving = append(leaving, m)
+			continue
+		}
 		m.Lane = remapLane(m.Lane)
-		if m.Base >= 0 {
+		if m.Kind == "pr" || m.Kind == "issue" {
 			m.Base = remapLane(m.Base)
 		}
 		m.Style = Faded

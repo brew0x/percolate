@@ -258,6 +258,82 @@ func TestTransitionFadeKeepsRemovedLane(t *testing.T) {
 	}
 }
 
+// A commit, run, release or deployment carries no base lane: its Base is the
+// unused zero value. Remapping it during a fade must not re-invent a removed
+// lane that no fading mark draws on; only a genuine fade lane is kept.
+func TestTransitionFadeDoesNotRemapUnusedBase(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+
+	// Lane 0 ("aaa") is an empty branch that disappears together with the
+	// commit on main. The departing commit's unused Base must not bring the
+	// removed lane back: nothing fades on it.
+	prev := repo.Snapshot{
+		Now:      day,
+		Branches: []repo.Branch{{Name: "aaa"}, {Name: "main"}},
+		Commits:  []repo.Commit{{SHA: "tip", Branch: "main", Author: "robin", Time: day}},
+	}
+	next := repo.Snapshot{Now: day.Add(time.Minute), Branches: []repo.Branch{{Name: "main"}}}
+	s := scene.Transition(prev, next, 16)
+	if want := scene.Build(next).Lanes; !reflect.DeepEqual(s.Lanes, want) {
+		t.Fatalf("fade invented a lane: %v, want %v", s.Lanes, want)
+	}
+	if m := markByID(t, s, "commit:tip"); m.Lane != 0 || m.Base != 0 {
+		t.Fatalf("departing commit drifted to lane %d/%d, want 0/0", m.Lane, m.Base)
+	}
+	if got := rowText(scene.Frame(s, 16, 100, 30)[0]); !strings.Contains(got, "1–1/1") {
+		t.Fatalf("header counts a lane nothing draws on: %q", got)
+	}
+
+	// With a genuine fade on the removed lane, exactly one lane is retained:
+	// the fading "aaa" commit's own, not a second one from the departing
+	// main commit's unused Base.
+	prev2 := repo.Snapshot{
+		Now:      day,
+		Branches: []repo.Branch{{Name: "aaa"}, {Name: "main"}},
+		Commits: []repo.Commit{
+			{SHA: "on-aaa", Branch: "aaa", Author: "robin", Time: day},
+			{SHA: "on-main", Branch: "main", Author: "robin", Time: day.Add(-time.Minute)},
+		},
+	}
+	s2 := scene.Transition(prev2, next, 16)
+	nextBuilt := scene.Build(next)
+	if len(s2.Lanes) != len(nextBuilt.Lanes)+1 {
+		t.Fatalf("fade kept %d lanes, want %d plus one fade lane: %v", len(s2.Lanes), len(nextBuilt.Lanes), s2.Lanes)
+	}
+	if m := markByID(t, s2, "commit:on-aaa"); m.Lane != len(s2.Lanes)-1 {
+		t.Fatalf("fading commit left its removed lane: %d of %v", m.Lane, s2.Lanes)
+	}
+	if m := markByID(t, s2, "commit:on-main"); m.Lane != 0 {
+		t.Fatalf("fading main commit drifted: lane %d of %v", m.Lane, s2.Lanes)
+	}
+	if got := rowText(scene.Frame(s2, 16, 100, 30)[0]); !strings.Contains(got, "1–2/2") {
+		t.Fatalf("header does not show the retained fade lane: %q", got)
+	}
+}
+
+// An unlinked issue keeps a margin placeholder in Lane and a negative Base,
+// and an issue-only snapshot has no lanes at all. Its departure must not
+// index or remap those placeholders: Transition is exported and pure over
+// snapshots, so a legal snapshot cannot crash the renderer.
+func TestTransitionUnlinkedIssueDepartsWithoutLanes(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{Now: day, Issues: []repo.Issue{{Number: 5, Title: "solo", State: "open"}}}
+	next := repo.Snapshot{Now: day.Add(time.Minute)}
+	s := scene.Transition(prev, next, 16)
+	if want := scene.Build(next).Lanes; !reflect.DeepEqual(s.Lanes, want) {
+		t.Fatalf("fade invented lanes: %v, want %v", s.Lanes, want)
+	}
+	m := markByID(t, s, "issue:5")
+	if !m.Departing || m.Style != scene.Faded {
+		t.Fatalf("unlinked issue did not fade: %+v", m)
+	}
+	// The spring still draws at the margin; no lane and no feed are invented.
+	g := scene.Frame(s, 16, 100, 30)
+	if g[3][0].Rune != '∿' {
+		t.Fatalf("departing margin spring missing:\n%s", g)
+	}
+}
+
 // An unchanged in-progress run must keep its pulse value across the second
 // half; this pins the exact regression that the settle path froze it.
 func TestTransitionStillRunningMatchesBuildThroughout(t *testing.T) {
