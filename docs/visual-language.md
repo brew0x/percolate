@@ -7,8 +7,8 @@
 | `●` | Commit | Newest at top, descending timestamp; SHA breaks timestamp ties. Position is global commit rank, not elapsed time; parent endpoints share the same row across lanes. |
 | `◇`, `─`, `▼`, `#N` | Pull request | Diamond at head, path toward base, arrow at base. PR number labels the path. All recorded states retain their path; state and reviews are in details. |
 | `‹`, `›` | Pull request | Base lies beyond this viewport; path continues toward it. |
-| `∿ #N` (fresh) | Open issue with a recorded closing reference | Small spring on the shelf above the pull request's head lane; `N` is the issue number. A dotted `⋮` feed runs down that lane into the pull request's flow, stopping above its diamond. |
-| `⋮` | Closing reference feed | Recorded link from an issue to the pull request whose reference names it. Drawn only in empty cells, so commits and parent paths occlude it rather than merge with it. |
+| `∿ #N` (fresh) | Open issue with a recorded closing reference | Small spring on the shelf above the pull request's head lane; `N` is the issue number. A dotted `⋮` feed runs down that lane into the pull request's flow, stopping above its diamond. The layer draws last but only fills cells that are empty or its own: a commit dripping through the shelf during a change keeps the cell, and the spring reappears whole once the cell frees. |
+| `⋮` | Closing reference feed | Recorded link from an issue to the pull request whose reference names it. Drawn only in empty cells, so commits and parent paths occlude it rather than merge with it. A pull request that is leaving the scene answers only its own fading issue's reference; a departed pull request never carries a surviving issue's feed. |
 | `∿` (dim, far-left margin) | Open issue with no recorded closing reference | Sits quietly in the margin with no feed. A closed issue draws nothing. |
 | `◌ ◔ ◑ ◕` | Running workflow run | Four phases, eight frames each, repeating every 32 frames. First half of cycle dims. Applies to any status other than completed. |
 | `✓` | Completed successful workflow | Conclusion success. |
@@ -21,7 +21,7 @@
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
 | New bead forming at the top of its lane | Commit added by a refresh | For 32 frames after a live snapshot changes, a commit absent from the previous snapshot drips toward its recorded row; its parent paths and any CI anchored to it follow. It draws dim for the first half, then takes its final style. A commit landing below the top starts at the top row; a newest commit (recorded rank 0) starts one row above the commit region, clear of the lane names, so it visibly falls in instead of sitting still. The offset applies even to a repository's first commit, where rank alone is ignored. |
 | Finishing run settling | Workflow run completed by a refresh | A run that was running in the previous snapshot and is completed in the new one keeps the frame-indexed pulse for the first half of the 32-frame change, then stops and draws its recorded outcome glyph. A run still running in the new snapshot keeps pulsing for the whole change; no run freezes on a still glyph mid-transition. |
-| Object fading in place | PR, issue or commit gone after a refresh | An object present in the previous snapshot but absent from the new one draws dim in place through the 32-frame change, then leaves. Its lane is the same branch it belonged to; a lane removed in the new snapshot is kept under its own name for the fade, so nothing vanishes off-screen or drifts onto another branch. No closed state is invented. |
+| Object fading in place | PR, issue or commit gone after a refresh | An object present in the previous snapshot but absent from the new one draws dim in place through the 32-frame change, then leaves. Its lane is the same branch it belonged to; a lane removed in the new snapshot is kept under its own name for the fade, so nothing vanishes off-screen or drifts onto another branch. Fading marks draw beneath the surviving ones, so a cell shared with something that stays belongs to what stays. No closed state is invented. |
 
 Only published releases enter the snapshot: a draft was never published and
 draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
@@ -51,9 +51,11 @@ Static renders show the first lanes; navigating marks in the TUI reveals their
 head lane. Every PR remains in the scene, including offscreen ones. Dense marks
 may share cells: snapshot order wins, then the selected mark draws last. This
 is occlusion, not aggregation or fabricated activity. Navigation reaches every
-mark even when its original cell is occupied. Vertical positions compress to
-available rows; very small terminals show only the title. Resize recomputes the
-same scene at the new dimensions.
+mark even when its original cell is occupied. During a change, fading marks
+draw beneath the surviving ones so the settled state keeps shared cells; the
+issue layer only fills cells that are empty or its own. Vertical positions
+compress to available rows; very small terminals show only the title. Resize
+recomputes the same scene at the new dimensions.
 
 Palette IDs: 0 plain, 1 lane, 2 fresh, 3 faded, 4 pass, 5 fail, 6 pulse,
 7 release/deployment, 8 selected. A frame is the runes **and** these IDs.

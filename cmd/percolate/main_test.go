@@ -381,6 +381,65 @@ func TestLiveRefreshStartsTransition(t *testing.T) {
 	}
 }
 
+// An unchanged poll still carries a fresh capture time, and Build ages commit
+// styles against it. The scene must refresh without starting a transition: a
+// commit crossing the 48-hour threshold dims, and stillness stays still.
+func TestUnchangedPollAgesCommits(t *testing.T) {
+	now := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	snap := repo.Snapshot{
+		Now:      now,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha(1), Branch: "main", Author: "robin", Time: now.Add(-47 * time.Hour)}},
+	}
+	m := model{s: scene.Build(snap), prev: snap, cur: snap, width: 60, height: 20}
+	if m.s.Marks[0].Style != scene.Fresh {
+		t.Fatal("test setup: the commit should start fresh")
+	}
+	later := snap
+	later.Now = now.Add(2 * time.Hour) // the commit is now 49 hours old
+	updated, cmd := m.Update(snapshotMsg{snap: later})
+	m = updated.(model)
+	if m.transiting {
+		t.Fatal("an unchanged poll replayed a transition")
+	}
+	if cmd == nil {
+		t.Fatal("an unchanged poll stopped polling")
+	}
+	if !m.cur.Now.Equal(later.Now) {
+		t.Fatal("an unchanged poll did not take the fresh capture time")
+	}
+	if m.s.Marks[0].Style != scene.Faded {
+		t.Fatal("an unchanged poll froze commit aging")
+	}
+}
+
+// The drawn change must be reproducible from the two snapshots and the
+// transition-relative frame alone: Frame takes the same index Transition does,
+// so a running run's pulse phase never depends on when the poll arrived.
+func TestTransitionViewIsTransitionRelative(t *testing.T) {
+	now := time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC)
+	snap := repo.Snapshot{
+		Now:      now,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha(1), Branch: "main", Author: "robin", Time: now}},
+	}
+	snap.Runs = []repo.WorkflowRun{{ID: 1, HeadSHA: sha(1), Status: "in_progress"}}
+	view := func(start, frame int) string {
+		m := model{
+			s: scene.Build(snap), prev: snap, cur: snap, width: 60, height: 20,
+			transiting: true, transitionStart: start, frame: frame,
+		}
+		return m.View().Content
+	}
+	same := view(0, 20)
+	if view(10, 30) != same {
+		t.Fatal("the same transition frame drew differently: Frame got the session-wide index")
+	}
+	if view(0, 28) == same {
+		t.Fatal("different transition frames drew identically")
+	}
+}
+
 // A refresh that inserts a new commit ahead of the selected one must keep the
 // same object highlighted and keep its open details. Preserving only the
 // numeric index would hand the selection to the newly inserted commit.

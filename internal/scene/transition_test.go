@@ -288,6 +288,7 @@ func TestTransitionGolden(t *testing.T) {
 		{"small", "small-next", "transition"},
 		{"newest", "newest-next", "newest"},
 		{"merged", "merged-next", "merged"},
+		{"feed", "feed-next", "feed"},
 	} {
 		prev, next := fixture(t, tc.prev), fixture(t, tc.next)
 		for _, frame := range []int{0, 8, 16, 24, 31, 32} {

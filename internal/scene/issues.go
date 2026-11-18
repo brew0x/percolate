@@ -74,20 +74,45 @@ type issueView struct {
 // drawIssues draws the issue layer last. Linked springs sit above the head
 // lane of the pull request whose recorded closing reference names them, with a
 // dotted feed down that lane into the PR flow. Unlinked springs sit quietly in
-// the far-left margin and draw no feed. Feed cells are written only where the
-// frame is empty, so commits and recorded paths always win (occlusion, not
-// aggregation). The selected spring draws last so it stays inspectable.
+// the far-left margin and draw no feed. The layer only fills cells that are
+// empty or that it wrote itself this frame, so commits, runs, recorded paths
+// and a dripping bead always win the shared shelf row (occlusion, not
+// aggregation); labels clear only cells the layer owns, so a shorter number
+// still erases a longer one without erasing recorded data. The selected spring
+// draws last so it stays inspectable.
+//
+// Closing references resolve by the pull request's snapshot rank. Pull
+// requests that are departing — present in the previous snapshot only — answer
+// only their own fading issues; a departed PR must never satisfy the lookup
+// for a surviving issue that moved into its rank.
 func drawIssues(g Grid, s Scene, v issueView) {
 	prByRank := make(map[int]Mark, len(s.Marks))
+	departedByRank := make(map[int]Mark)
 	for _, m := range s.Marks {
-		if m.Kind == "pr" {
+		if m.Kind != "pr" {
+			continue
+		}
+		if m.Departing {
+			departedByRank[m.Rank] = m
+		} else {
 			prByRank[m.Rank] = m
 		}
 	}
-	put := func(x, y int, r rune, style Style) {
-		if y >= 0 && y < v.height && x >= 0 && x < v.width {
-			g[y][x] = Cell{r, style}
+	// written holds every cell this layer claimed in the current frame, so a
+	// later issue can replace an earlier one's label (and the selected spring
+	// can redraw) while recorded marks stay untouchable.
+	written := make(map[[2]int]bool)
+	put := func(x, y int, r rune, style Style) bool {
+		if y < 0 || y >= v.height || x < 0 || x >= v.width {
+			return false
 		}
+		key := [2]int{x, y}
+		if !written[key] && g[y][x].Rune != ' ' {
+			return false
+		}
+		g[y][x] = Cell{r, style}
+		written[key] = true
+		return true
 	}
 	drawOne := func(m Mark) {
 		style := m.Style
@@ -107,7 +132,11 @@ func drawIssues(g Grid, s Scene, v issueView) {
 		}
 		x := v.xpos(m.Lane)
 		y := v.top - 1
-		pr, ok := prByRank[m.Rank]
+		ranks := prByRank
+		if m.Departing {
+			ranks = departedByRank
+		}
+		pr, ok := ranks[m.Rank]
 		prRow := -1
 		if ok {
 			prRow = min(v.height-4, v.bottom+1+pr.Rank%max(1, v.height-v.bottom-4))
@@ -119,12 +148,18 @@ func drawIssues(g Grid, s Scene, v issueView) {
 				y = 1
 			}
 		}
-		put(x, y, issueSpring, style)
+		if !put(x, y, issueSpring, style) {
+			// A recorded mark holds the shelf cell — a commit dripping through
+			// it during a transition, for example. The spring stays hidden and
+			// draws nothing around it; it reappears whole once the cell frees.
+			return
+		}
 		if v.span >= 5 {
-			// Clear the whole label field before writing. Several issues may
-			// link to the same head lane; a short label drawn over a longer
-			// one would otherwise leave fabricated digits behind (#5 over
-			// #100 reads #500), and selection draws an issue a second time.
+			// Clear the label field the layer owns before writing. Several
+			// issues may link to the same head lane; a short label drawn over
+			// a longer one would otherwise leave fabricated digits behind (#5
+			// over #100 reads #500), and selection draws an issue a second
+			// time.
 			for i := 0; i < v.span-2; i++ {
 				put(x+1+i, y, ' ', Plain)
 			}
@@ -132,7 +167,9 @@ func drawIssues(g Grid, s Scene, v issueView) {
 				if i >= v.span-2 {
 					break
 				}
-				put(x+1+i, y, r, style)
+				if !put(x+1+i, y, r, style) {
+					break
+				}
 			}
 		}
 		if !ok {
@@ -140,7 +177,8 @@ func drawIssues(g Grid, s Scene, v issueView) {
 		}
 		for yy := v.top; yy < prRow && yy < v.height; yy++ {
 			if g[yy][x].Rune == ' ' {
-				put(x, yy, issueFeed, LaneStyle)
+				g[yy][x] = Cell{issueFeed, LaneStyle}
+				written[[2]int{x, yy}] = true
 			}
 		}
 	}

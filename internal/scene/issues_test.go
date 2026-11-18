@@ -3,6 +3,7 @@ package scene_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
@@ -120,6 +121,109 @@ func springX(t *testing.T, row []scene.Cell) int {
 	}
 	t.Fatal("no spring in row")
 	return 0
+}
+
+// A pull request that disappears must not answer the rank lookup for the
+// surviving pull request that moved into its rank. In this pair pr 1 (old rank
+// 0) departs while pr 2 survives and holds rank 0; issue 5 is linked to pr 2.
+// The survivor's feed runs down its own lane and stops above pr 2's diamond,
+// and nothing feeds the departed PR on its retained lane.
+func TestIssueFeedFollowsSurvivingPR(t *testing.T) {
+	prev, next := fixture(t, "feed"), fixture(t, "feed-next")
+	var g scene.Grid
+	feeds := 0
+	for _, frame := range []int{0, 8, 16, 24, 31} {
+		g = scene.Frame(scene.Transition(prev, next, frame), frame, 100, 30)
+		if got := g[3][35]; got.Rune != '∿' || got.Style != scene.Fresh {
+			t.Fatalf("frame %d: survivor spring missing: %q\n%s", frame, got, g)
+		}
+		if g[3][36].Rune != '#' || g[3][37].Rune != '5' {
+			t.Fatalf("frame %d: survivor spring label wrong:\n%s", frame, g)
+		}
+		feeds = 0
+		for y := 4; y < 19; y++ {
+			if g[y][35].Rune == '⋮' {
+				feeds++
+			}
+		}
+		if feeds == 0 || g[19][35].Rune != '◇' {
+			t.Fatalf("frame %d: survivor feed does not reach pr 2:\n%s", frame, g)
+		}
+		if g[19][67].Rune != '◇' {
+			t.Fatalf("frame %d: departed PR not fading on its retained lane:\n%s", frame, g)
+		}
+		for y := 0; y < 30; y++ {
+			if g[y][67].Rune == '⋮' {
+				t.Fatalf("frame %d: a feed points at the departed PR:\n%s", frame, g)
+			}
+		}
+	}
+	settled := scene.Transition(prev, next, scene.TransitionFrames)
+	if len(settled.Lanes) != 2 {
+		t.Fatalf("removed lane lingered: %v", settled.Lanes)
+	}
+	for _, m := range settled.Marks {
+		if m.Style == scene.Faded {
+			t.Fatalf("fading mark %s lingered after the transition", m.ID)
+		}
+	}
+	g = scene.Frame(settled, 32, 100, 30)
+	x := springX(t, g[3])
+	feeds = 0
+	for y := 4; y < 19; y++ {
+		if g[y][x].Rune == '⋮' {
+			feeds++
+		}
+	}
+	if feeds == 0 || g[19][x].Rune != '◇' {
+		t.Fatalf("survivor lost its feed after settling:\n%s", g)
+	}
+}
+
+// The linked spring's shelf row is also the row a new newest commit drips
+// through. The issue layer draws last, but it may only fill cells that are
+// empty or its own: the falling bead, the CI pulse beside it and the lane
+// names survive every frame, and the spring reappears whole once the bead
+// lands.
+func TestIssueLayerKeepsEnteringCommitAndPulse(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{
+		Now:          day,
+		Branches:     []repo.Branch{{Name: "main"}, {Name: "topic"}},
+		Commits:      []repo.Commit{{SHA: "root", Branch: "main", Author: "robin", Time: day.Add(-time.Hour)}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 5, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	next := prev
+	next.Now = day.Add(time.Minute)
+	next.Commits = append([]repo.Commit{
+		{SHA: "new", Branch: "topic", Author: "robin", Time: day, Parents: []string{"root"}},
+	}, prev.Commits...)
+	next.Runs = []repo.WorkflowRun{{ID: 3, HeadSHA: "new", Status: "in_progress"}}
+
+	x := 3 + (60-4)/2 // the topic lane column at this width
+	for _, frame := range []int{0, 4, 8, 12, 15} {
+		g := scene.Frame(scene.Transition(prev, next, frame), frame, 60, 20)
+		if got := g[3][x]; got.Rune != '●' || got.Style != scene.Faded {
+			t.Fatalf("frame %d: entering bead not intact on the shelf row: %q\n%s", frame, got, g)
+		}
+		if got := g[3][x+2]; !strings.ContainsRune("◌◔◑◕", got.Rune) {
+			t.Fatalf("frame %d: CI pulse erased by the issue layer: %q\n%s", frame, got, g)
+		}
+		if g[3][x+1].Rune != ' ' {
+			t.Fatalf("frame %d: spring label left beside an occluded spring:\n%s", frame, g)
+		}
+		if got := rowText(g[2]); !strings.Contains(got, "topic") {
+			t.Fatalf("frame %d: lane name corrupted: %q\n%s", frame, got, g)
+		}
+	}
+	landed := scene.Frame(scene.Transition(prev, next, 16), 16, 60, 20)
+	if landed[3][x].Rune != '∿' || landed[3][x+1].Rune != '#' || landed[3][x+2].Rune != '5' {
+		t.Fatalf("linked spring did not reappear after the bead landed:\n%s", landed)
+	}
+	if landed[4][x].Rune != '●' {
+		t.Fatalf("newest commit not landed in the top row:\n%s", landed)
+	}
 }
 
 // At height 8 the shelf meets the PR's number-label row instead of its

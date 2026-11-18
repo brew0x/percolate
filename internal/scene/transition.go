@@ -208,16 +208,22 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 		remap[i] = j
 		return j
 	}
+	var leaving []Mark
 	for _, m := range prevBuilt.Marks {
 		if nextIDs[m.ID] {
 			continue
 		}
+		m.Departing = true
 		m.Lane = remapLane(m.Lane)
 		if m.Base >= 0 {
 			m.Base = remapLane(m.Base)
 		}
 		m.Style = Faded
-		base.Marks = append(base.Marks, m)
+		leaving = append(leaving, m)
 	}
+	// Leaving marks draw before the surviving ones, so an object that stays
+	// keeps any cell it shares with something on its way out: the settled
+	// state wins the cell, the fading mark shows only where it is alone.
+	base.Marks = append(leaving, base.Marks...)
 	return base
 }

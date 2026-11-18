@@ -29,12 +29,19 @@ change to what was read, so an unchanged poll never starts a transition.
 
 ## Consequences
 A recorded pair of snapshots plus a frame index reproduces any in-between
-frame, so goldens review the animation in CI. A failed poll is a footer status,
-not a fabricated scene; an unchanged poll does not replay a transition. The
-poll interval keeps an always-on window inside GitHub's read budget. Live
-animation is opt-in by running a repository; fixtures and `render` stay fixed.
-The TUI keeps selection by recorded object identity, not by numeric index: a
-refresh that inserts a commit ahead of the selected one cannot silently move
-the highlight or an open detail panel. An entering newest commit drips from a
-row offset rather than a negative rank, so its fall and the paths and CI that
-follow it never cross the lane-name row, even in a one-commit repository.
+frame, so goldens review the animation in CI. The TUI passes that same
+transition-relative index to both `Transition` and `Frame`, so the drawn
+change never depends on when a poll happened to arrive. A failed poll is a
+footer status, not a fabricated scene; an unchanged poll does not replay a
+transition, but it still refreshes the scene with the new capture time, because
+commit styles age against `Snapshot.Now` and a quiet repository must not
+brighten forever. The poll interval keeps an always-on window inside GitHub's
+read budget. Live animation is opt-in by running a repository; fixtures and
+`render` stay fixed. The TUI keeps selection by recorded object identity, not
+by numeric index: a refresh that inserts a commit ahead of the selected one
+cannot silently move the highlight or an open detail panel. An entering newest
+commit drips from a row offset rather than a negative rank, so its fall and
+the paths and CI that follow it never cross the lane-name row, even in a
+one-commit repository. Marks that leave draw beneath the ones that stay, and
+the issue layer fills only cells that are empty or its own, so a fading
+object can never take a cell a surviving object needs.

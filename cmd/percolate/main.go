@@ -337,6 +337,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.selected, m.selectedID = 0, ""
 			}
+		} else if !v.snap.Now.Equal(m.cur.Now) {
+			// Same recorded state, a fresh capture time. Build ages commit
+			// styles against the recorded clock, so take the new snapshot
+			// without starting a transition: stillness still means nothing
+			// moved, but a commit crossing the age threshold still dims.
+			m.cur = v.snap
+			m.s = scene.Build(v.snap)
 		}
 		return m, poll()
 	case tea.WindowSizeMsg:
@@ -360,8 +367,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m model) View() tea.View {
 	s := m.s
+	// During a change both renderers take the transition-relative frame, so
+	// the drawn animation is reproducible from the two snapshots and the frame
+	// index alone and does not depend on when the poll happened to arrive.
+	frame := m.frame
 	if m.transiting {
-		s = scene.Transition(m.prev, m.cur, max(0, m.frame-m.transitionStart))
+		frame = max(0, m.frame-m.transitionStart)
+		s = scene.Transition(m.prev, m.cur, frame)
 	}
 	selected := markIndex(s, m.selectedID)
 	if selected < 0 {
@@ -380,7 +392,7 @@ func (m model) View() tea.View {
 		reserve = 3
 	}
 	height := max(0, m.height-reserve)
-	text := paint(scene.Frame(s, m.frame, m.width, height), true)
+	text := paint(scene.Frame(s, frame, m.width, height), true)
 	footer := "tab / arrows  ·  enter  ·  q"
 	if m.refreshFailed {
 		footer = "refresh failed; retrying  ·  " + footer

@@ -50,10 +50,16 @@ type Mark struct {
 	// newest commit uses it instead of a negative rank so its fall, and the
 	// parent paths and anchored CI that follow it, stay clear of the lane
 	// names. Frame applies it even when Total is one, where Rank is ignored.
-	Drip    int
-	Glyph   rune
-	Style   Style
-	Running bool
+	Drip int
+	// Departing marks were present in the previous snapshot and are absent
+	// from the new one; Transition appends them while they fade. Keeping them
+	// identifiable lets the issue layer resolve closing references against
+	// only the pull requests the new snapshot still holds, so a departed PR
+	// never answers a surviving issue's rank lookup.
+	Departing bool
+	Glyph     rune
+	Style     Style
+	Running   bool
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.

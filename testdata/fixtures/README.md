@@ -60,3 +60,11 @@ checked-in fixture; no private data.
 `flow-01` branch, all of its commits, its pull request and its workflow run, so
 the objects that fade in the transition belonged to a lane the new snapshot no
 longer has. Fiction derived from a checked-in fixture; no private data.
+
+## `feed.json`, `feed-next.json` — fictional closing-reference handoff
+
+`feed-next.json` removes pull request 1 (old rank 0) and its branch, so pull
+request 2 survives and moves into rank 0 while issue 5 stays linked to it. The
+pair pins the survivor's feed running down its own lane to pr 2's diamond, and
+the departed PR fading on its retained lane without attracting any feed.
+Fiction derived from a checked-in fixture; no private data.
