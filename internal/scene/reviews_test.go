@@ -385,3 +385,48 @@ func TestDepartingMarkDoesNotCrossSurvivingPath(t *testing.T) {
 		}
 	}
 }
+
+// A review mark converges where a flow meets its base lane. When that base is
+// another pull request's head lane, the mark lands on that PR's diamond at a
+// compact height: a later changes-requested w2 -> w1 flow must not paint its
+// red circle over the earlier approved w1 -> main flow's diamond, whichever PR
+// is selected. The diamond names its PR, so it stays; the converging PR keeps
+// its state in its details instead.
+func TestReviewMarkDoesNotReplaceHeadDiamond(t *testing.T) {
+	s := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}},
+		PullRequests: []repo.PullRequest{
+			{Number: 1, Head: "w1", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}},
+			{Number: 2, Head: "w2", Base: "w1", State: "open", Reviews: []repo.Review{{Author: "sage", State: "changes_requested"}}},
+		},
+	}
+	// At 60x7 every flow draws on row 3; three lanes put main at column 3, w1
+	// at 21 and w2 at 39. PR #1's diamond and PR #2's convergence share (3,21).
+	for _, selected := range []string{"", "pr:1", "pr:2"} {
+		built := scene.Build(s)
+		built.SelectedID = selected
+		g := scene.Frame(built, 0, 60, 7)
+
+		diamondStyle := scene.Fresh
+		approvedStyle := scene.Pass
+		if selected == "pr:1" {
+			diamondStyle, approvedStyle = scene.Selected, scene.Selected
+		}
+		if got := g[3][21]; got.Rune != '◇' || got.Style != diamondStyle {
+			t.Fatalf("selected=%q: approved head diamond replaced by a review mark: %q\n%s", selected, got, g)
+		}
+		// The approved flow still converges on main with its approved mark.
+		if got := g[3][3]; got.Rune != '▼' || got.Style != approvedStyle {
+			t.Fatalf("selected=%q: approved convergence lost: %q\n%s", selected, got, g)
+		}
+		// The changes-requested flow keeps its own diamond at w2; its state is
+		// reported in its details, not painted over the diamond it collides with.
+		changesDiamondStyle := scene.Fresh
+		if selected == "pr:2" {
+			changesDiamondStyle = scene.Selected
+		}
+		if got := g[3][39]; got.Rune != '◇' || got.Style != changesDiamondStyle {
+			t.Fatalf("selected=%q: changes-requested diamond lost: %q\n%s", selected, got, g)
+		}
+	}
+}

@@ -351,6 +351,20 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		}
 		endpointStates[[2]int{bx, y}][m.Review] = true
 	}
+	// A convergence mark must not replace another pull request's head diamond.
+	// At a compact height every flow shares a row, so a PR whose base lane is a
+	// different PR's head lands its review arrow exactly on that PR's diamond.
+	// The diamond names its pull request, so it stays and the converging PR's
+	// state lives in its details instead — just like a disputed convergence.
+	// Departing flows count while their diamond is still visible.
+	headCells := map[[2]int]bool{}
+	for _, m := range s.Marks {
+		if m.Kind != "pr" || !visible(m.Lane) {
+			continue
+		}
+		_, y := prEndpoint(m)
+		headCells[[2]int{xpos(m.Lane), y}] = true
+	}
 	for _, c := range cells {
 		glyph := '─'
 		switch {
@@ -430,13 +444,14 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			// leave the plain path run instead of capping an earlier flow with
 			// a later or departing flow's mark. endpointStates counts every
 			// visible flow, including ones fading out, because their diamond
-			// and path still visibly end at that cell. Selection is no excuse
-			// to claim the cell either: drawing last would make one flow's
-			// arrow read as another's when color is disabled. Its state stays
-			// in its details; its diamond, path and number keep the selected
-			// style.
+			// and path still visibly end at that cell. The same cell may instead
+			// be another PR's head: the diamond names that PR, so a review mark
+			// must not cover it whichever flow is selected. In both cases the
+			// converging PR's state stays in its details; its diamond, path and
+			// number keep their own (or the selected) style.
 			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, by}]) > 1
-			if !sharedDisagreement {
+			headCollision := onScreenBase && headCells[[2]int{bx, by}]
+			if !sharedDisagreement && !headCollision {
 				put(bx, by, arrow, arrowStyle)
 			}
 			put(x, by, m.Glyph, style)
