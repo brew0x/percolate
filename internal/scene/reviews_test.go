@@ -104,8 +104,8 @@ func TestSharedConvergenceDoesNotMisattribute(t *testing.T) {
 		// At height 20 ranks 0 and 4 share the compressed row 13. PR #1
 		// (approved, head w2) and PR #5 (waiting, head w1) both converge on
 		// main at the same cell. The waiting PR is drawn later and its shorter
-		// path leaves the approved PR's far diamond visible: this is the busy
-		// golden's #73/#81 shape.
+		// path leaves the approved PR's far diamond visible: the compressed
+		// row shape the safeguard has to survive.
 		PullRequests: []repo.PullRequest{
 			mk(1, "w2", "approved"),
 			mk(2, "w1", ""),
@@ -125,6 +125,18 @@ func TestSharedConvergenceDoesNotMisattribute(t *testing.T) {
 	// The shared base cell carries neither review mark, only the path run.
 	if got := g[13][3]; got.Rune != '─' {
 		t.Fatalf("shared convergence misattributed a review state: %q", got)
+	}
+	// Selection is no excuse to claim the shared cell: the selected waiting
+	// PR draws last, but the cell still belongs to no single flow. Its own
+	// diamond keeps the selected style so it stays inspectable.
+	built := scene.Build(s)
+	built.SelectedID = "pr:5"
+	g = scene.Frame(built, 0, 60, 20)
+	if got := g[13][3]; got.Rune != '─' {
+		t.Fatalf("selected PR claimed the shared convergence: %q\n%s", got, g)
+	}
+	if got := g[13][17]; got.Rune != '◇' || got.Style != scene.Selected {
+		t.Fatalf("selected waiting PR lost its diamond: %q\n%s", got, g)
 	}
 }
 
@@ -322,5 +334,17 @@ func TestCrossingPathDoesNotEraseReviewMark(t *testing.T) {
 	g := scene.Frame(scene.Build(s), 0, 60, 20)
 	if got := g[13][17]; got.Rune != '▼' || got.Style != scene.Pass {
 		t.Fatalf("crossing path erased the approved mark: %q\n%s", got, g)
+	}
+	// Selecting the crossing PR must not change that: its path is laid down
+	// before any mark, while its own mark still draws last in the selected
+	// style and reports its waiting state.
+	built := scene.Build(s)
+	built.SelectedID = "pr:5"
+	g = scene.Frame(built, 0, 60, 20)
+	if got := g[13][17]; got.Rune != '▼' || got.Style != scene.Pass {
+		t.Fatalf("selected crossing path erased the approved mark: %q\n%s", got, g)
+	}
+	if got := g[13][3]; got.Rune != '▽' || got.Style != scene.Selected {
+		t.Fatalf("selected PR lost its own waiting mark: %q\n%s", got, g)
 	}
 }

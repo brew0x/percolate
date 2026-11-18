@@ -430,10 +430,13 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			// leave the plain path run instead of capping an earlier flow with
 			// a later or departing flow's mark. endpointStates counts every
 			// visible flow, including ones fading out, because their diamond
-			// and path still visibly end at that cell. The selected PR still
-			// draws last in the selected style, so its mark stays its own.
+			// and path still visibly end at that cell. Selection is no excuse
+			// to claim the cell either: drawing last would make one flow's
+			// arrow read as another's when color is disabled. Its state stays
+			// in its details; its diamond, path and number keep the selected
+			// style.
 			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, by}]) > 1
-			if !sharedDisagreement || selected {
+			if !sharedDisagreement {
 				put(bx, by, arrow, arrowStyle)
 			}
 			put(x, by, m.Glyph, style)
@@ -455,20 +458,27 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			put(x, y, m.Glyph, style)
 		}
 	}
-	// Every PR path goes down first, then every mark: an arrow is never
-	// overwritten by another flow's path crossing its cell. The selected
-	// object draws its whole flow last so it stays inspectable.
+	// Every PR path goes down before any mark, so a crossing path cannot
+	// erase another flow's arrow, diamond or number label. The selected path
+	// goes after the other paths but still before every mark, so its whole
+	// flow keeps the selected style without covering a settled flow's mark.
 	for _, m := range s.Marks {
-		if m.Kind == "pr" {
+		if m.Kind == "pr" && m.ID != s.SelectedID {
 			draw(m, false, true)
 		}
 	}
 	for _, m := range s.Marks {
-		draw(m, false, false)
+		if m.Kind == "pr" && m.ID == s.SelectedID {
+			draw(m, true, true)
+		}
+	}
+	for _, m := range s.Marks {
+		if m.ID != s.SelectedID {
+			draw(m, false, false)
+		}
 	}
 	for _, m := range s.Marks {
 		if m.ID == s.SelectedID {
-			draw(m, true, true)
 			draw(m, true, false)
 		}
 	}

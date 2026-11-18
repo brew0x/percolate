@@ -58,6 +58,23 @@ func TestGolden(t *testing.T) {
 		}
 	}
 }
+
+// The busy replay frames are the proof that all three review marks are
+// visible, not just the two decisive ones. Compressed rows suppress a mark at
+// a convergence shared by flows with differing states, so a waiting ▽ is easy
+// to lose from the goldens entirely; the seeded review classes must keep one
+// visible at each replay size.
+func TestBusyReplayShowsEveryReviewMark(t *testing.T) {
+	s := scene.Build(fixture(t, "busy"))
+	for _, size := range [][2]int{{100, 30}, {60, 20}} {
+		frame := scene.Frame(s, 0, size[0], size[1]).String()
+		for _, glyph := range []rune{'▽', '▼', '⊗'} {
+			if !strings.ContainsRune(frame, glyph) {
+				t.Fatalf("%dx%d replay is missing %q", size[0], size[1], glyph)
+			}
+		}
+	}
+}
 func TestDeterminism(t *testing.T) {
 	for _, name := range []string{"small", "busy", "recorded-hivemq"} {
 		s := fixture(t, name)
