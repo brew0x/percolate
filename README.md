@@ -76,6 +76,13 @@ There is also a real public recording, captured from an unauthenticated read of
 percolate --fixture testdata/fixtures/recorded-hivemq.json
 ```
 
+In live mode Percolate re-reads the repository every 60 seconds. When a poll
+brings changes, the view animates them over a fixed 32 frames: new commits drip
+in from the top of their lane, runs that finished settle on their outcome, and
+objects that left the snapshot fade. The animation depends only on the two
+snapshots and the frame index, so it replays exactly; a failed refresh is noted
+in the footer and retried, and unchanged polls do not replay it.
+
 Press arrows or tab to select a mark, enter for details, escape to close details,
 and q to quit. Selection reveals offscreen lanes. Resize the terminal freely.
 

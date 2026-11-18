@@ -1,0 +1,82 @@
+{
+  "now": "2026-01-20T12:00:00Z",
+  "branches": [
+    {
+      "name": "main"
+    },
+    {
+      "name": "flow-01"
+    },
+    {
+      "name": "flow-02"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "0000000100000000000000000000000000000001",
+      "parents": null,
+      "branch": "main",
+      "author": "robin",
+      "time": "2026-01-20T00:00:00Z"
+    },
+    {
+      "sha": "0000000200000000000000000000000000000002",
+      "parents": null,
+      "branch": "flow-01",
+      "author": "robin",
+      "time": "2026-01-20T01:00:00Z"
+    },
+    {
+      "sha": "0000000300000000000000000000000000000003",
+      "parents": null,
+      "branch": "flow-02",
+      "author": "robin",
+      "time": "2026-01-20T02:00:00Z"
+    }
+  ],
+  "issues": [
+    {
+      "number": 5,
+      "title": "survivor",
+      "state": "open",
+      "closed_by": 2
+    }
+  ],
+  "pull_requests": [
+    {
+      "number": 1,
+      "head": "flow-01",
+      "base": "main",
+      "state": "open"
+    },
+    {
+      "number": 2,
+      "head": "flow-02",
+      "base": "main",
+      "state": "open",
+      "reviews": [
+        {
+          "author": "sage",
+          "state": "approved"
+        }
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": 1,
+      "head_sha": "0000000300000000000000000000000000000003",
+      "status": "in_progress",
+      "conclusion": "",
+      "jobs": [
+        {
+          "name": "check",
+          "status": "in_progress",
+          "conclusion": ""
+        }
+      ]
+    }
+  ],
+  "releases": [],
+  "deployments": []
+}

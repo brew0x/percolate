@@ -5,6 +5,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,7 +16,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 )
@@ -316,5 +319,183 @@ func TestWatchLiveFailure(t *testing.T) {
 	message := strings.TrimSuffix(errOut.String(), "\n")
 	if !strings.Contains(message, "rate limit") || strings.Contains(message, "\n") || strings.Contains(message, "test-token") {
 		t.Fatalf("not a safe one-line failure: %q", message)
+	}
+}
+
+// A live refresh that changes the snapshot starts a frame-indexed transition;
+// an unchanged poll does not replay one, and the transition ends on its own.
+func TestLiveRefreshStartsTransition(t *testing.T) {
+	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := day1.Add(24 * time.Hour)
+	day3 := day2.Add(24 * time.Hour)
+	prev := repo.Snapshot{
+		Now:      day3,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: []repo.Commit{
+			{SHA: sha(1), Branch: "main", Author: "robin", Time: day3},
+			{SHA: sha(2), Branch: "main", Author: "robin", Time: day2, Parents: []string{sha(1)}},
+			{SHA: sha(3), Branch: "main", Author: "robin", Time: day1, Parents: []string{sha(2)}},
+		},
+	}
+	next := repo.Snapshot{
+		Now:      day3.Add(time.Hour),
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: append([]repo.Commit{
+			{SHA: sha(4), Branch: "main", Author: "robin", Time: day1.Add(12 * time.Hour), Parents: []string{sha(3)}},
+		}, prev.Commits...),
+	}
+	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 100, height: 30}
+
+	// A live poll re-reads the same state with a fresh capture timestamp; the
+	// model must treat that as unchanged and keep the current scene.
+	unchanged := prev
+	unchanged.Now = prev.Now.Add(time.Hour)
+	updated, _ := m.Update(snapshotMsg{snap: unchanged})
+	m = updated.(model)
+	if m.transiting {
+		t.Fatal("an unchanged poll with a fresh timestamp replayed a transition")
+	}
+
+	updated, cmd := m.Update(snapshotMsg{snap: next})
+	m = updated.(model)
+	if !m.transiting || cmd == nil {
+		t.Fatal("a changed snapshot did not start a transition")
+	}
+	if !live.Equal(m.cur, next) || !live.Equal(m.prev, prev) {
+		t.Fatal("transition did not bracket the two snapshots")
+	}
+
+	m.frame = 0
+	first := m.View().Content
+	m.frame = scene.TransitionFrames // the settled scene differs from the start
+	second := m.View().Content
+	if first == second {
+		t.Fatal("View did not render the transition")
+	}
+	for i := 0; i <= scene.TransitionFrames; i++ {
+		updated, _ = m.Update(tickMsg{})
+		m = updated.(model)
+	}
+	if m.transiting {
+		t.Fatal("transition did not end after TransitionFrames")
+	}
+}
+
+// An unchanged poll still carries a fresh capture time, and Build ages commit
+// styles against it. The scene must refresh without starting a transition: a
+// commit crossing the 48-hour threshold dims, and stillness stays still.
+func TestUnchangedPollAgesCommits(t *testing.T) {
+	now := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+	snap := repo.Snapshot{
+		Now:      now,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha(1), Branch: "main", Author: "robin", Time: now.Add(-47 * time.Hour)}},
+	}
+	m := model{s: scene.Build(snap), prev: snap, cur: snap, width: 60, height: 20}
+	if m.s.Marks[0].Style != scene.Fresh {
+		t.Fatal("test setup: the commit should start fresh")
+	}
+	later := snap
+	later.Now = now.Add(2 * time.Hour) // the commit is now 49 hours old
+	updated, cmd := m.Update(snapshotMsg{snap: later})
+	m = updated.(model)
+	if m.transiting {
+		t.Fatal("an unchanged poll replayed a transition")
+	}
+	if cmd == nil {
+		t.Fatal("an unchanged poll stopped polling")
+	}
+	if !m.cur.Now.Equal(later.Now) {
+		t.Fatal("an unchanged poll did not take the fresh capture time")
+	}
+	if m.s.Marks[0].Style != scene.Faded {
+		t.Fatal("an unchanged poll froze commit aging")
+	}
+}
+
+// The drawn change must be reproducible from the two snapshots and the
+// transition-relative frame alone: Frame takes the same index Transition does,
+// so a running run's pulse phase never depends on when the poll arrived.
+func TestTransitionViewIsTransitionRelative(t *testing.T) {
+	now := time.Date(2026, 1, 20, 0, 0, 0, 0, time.UTC)
+	snap := repo.Snapshot{
+		Now:      now,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha(1), Branch: "main", Author: "robin", Time: now}},
+	}
+	snap.Runs = []repo.WorkflowRun{{ID: 1, HeadSHA: sha(1), Status: "in_progress"}}
+	view := func(start, frame int) string {
+		m := model{
+			s: scene.Build(snap), prev: snap, cur: snap, width: 60, height: 20,
+			transiting: true, transitionStart: start, frame: frame,
+		}
+		return m.View().Content
+	}
+	same := view(0, 20)
+	if view(10, 30) != same {
+		t.Fatal("the same transition frame drew differently: Frame got the session-wide index")
+	}
+	if view(0, 28) == same {
+		t.Fatal("different transition frames drew identically")
+	}
+}
+
+// A refresh that inserts a new commit ahead of the selected one must keep the
+// same object highlighted and keep its open details. Preserving only the
+// numeric index would hand the selection to the newly inserted commit.
+func TestRefreshKeepsSelectedObject(t *testing.T) {
+	day1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2, day3 := day1.Add(24*time.Hour), day1.Add(48*time.Hour)
+	prev := repo.Snapshot{
+		Now:      day3,
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits: []repo.Commit{
+			{SHA: sha(11), Branch: "main", Author: "robin", Time: day3},
+			{SHA: sha(22), Branch: "main", Author: "sage", Time: day1, Parents: []string{sha(11)}},
+		},
+	}
+	next := prev
+	next.Now = day3.Add(time.Hour)
+	// The new commit sorts between the two originals, so numeric index 1
+	// would now point at it instead of the selected sage commit.
+	next.Commits = append([]repo.Commit{
+		{SHA: sha(33), Branch: "main", Author: "newcomer", Time: day2, Parents: []string{sha(11)}},
+	}, prev.Commits...)
+
+	selected := scene.Build(prev)
+	m := model{
+		s: selected, prev: prev, cur: prev, width: 60, height: 20,
+		selected: 1, selectedID: selected.Marks[1].ID, details: true,
+	}
+	if before := m.View().Content; !strings.Contains(before, "sage") {
+		t.Fatalf("test setup lost the selected details:\n%s", before)
+	}
+
+	updated, _ := m.Update(snapshotMsg{snap: next})
+	m = updated.(model)
+	if got, want := m.s.Marks[m.selected].ID, "commit:"+sha(22); got != want {
+		t.Fatalf("selected index points at %q, want %q", got, want)
+	}
+	after := m.View().Content
+	if !strings.Contains(after, "sage") || strings.Contains(after, "newcomer") {
+		t.Fatalf("refresh silently changed the selected object:\n%s", after)
+	}
+}
+
+// A failed poll is a footer status that keeps the old scene and schedules a
+// retry; it never draws a fabricated snapshot.
+func TestFailedRefreshKeepsScene(t *testing.T) {
+	prev := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 60, height: 20}
+	updated, cmd := m.Update(snapshotMsg{err: errors.New("temporary failure")})
+	m = updated.(model)
+	if !m.refreshFailed || cmd == nil {
+		t.Fatal("failed refresh was not noted or retried")
+	}
+	if !strings.Contains(m.View().Content, "refresh failed") {
+		t.Fatal("failed refresh had no footer status")
+	}
+	if !live.Equal(m.cur, prev) || m.transiting {
+		t.Fatal("failed refresh changed the scene")
 	}
 }

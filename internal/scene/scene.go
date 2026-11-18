@@ -45,9 +45,21 @@ func (g Grid) String() string {
 type Mark struct {
 	ID, Kind, Label, Detail string
 	Lane, Base, Rank, Total int
-	Glyph                   rune
-	Style                   Style
-	Running                 bool
+	// Drip is how many rows above its resting row a mark draws while it is
+	// entering during a transition, counting down to zero as it settles. A
+	// newest commit uses it instead of a negative rank so its fall, and the
+	// parent paths and anchored CI that follow it, stay clear of the lane
+	// names. Frame applies it even when Total is one, where Rank is ignored.
+	Drip int
+	// Departing marks were present in the previous snapshot and are absent
+	// from the new one; Transition appends them while they fade. Keeping them
+	// identifiable lets the issue layer resolve closing references against
+	// only the pull requests the new snapshot still holds, so a departed PR
+	// never answers a surviving issue's rank lookup.
+	Departing bool
+	Glyph     rune
+	Style     Style
+	Running   bool
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.
@@ -195,6 +207,14 @@ func RunGlyph(conclusion string) rune {
 	}
 }
 
+// pulseGlyph is the four-phase, eight-frame-per-phase running signal. Both
+// Frame and Transition use it so a live settle and a still frame pulse alike.
+func pulseGlyph(frame int) rune {
+	cycle := []rune{'◌', '◔', '◑', '◕'}
+	i := (((frame % 32) + 32) % 32) / 8
+	return cycle[i]
+}
+
 // VisibleLanes is shared by viewport navigation and rendering.
 func VisibleLanes(width int) int { return max(1, (width-4)/14) }
 
@@ -239,11 +259,16 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		label(x, 2, s.Lanes[i], span-2, Fresh)
 	}
 	top, bottom := 4, max(4, height*3/5)
+	// An entering mark rests above the commit region, in the gap between the
+	// lane names and the first bead. Clamping there keeps its drip, and every
+	// parent path following it, out of the lane-name row. The offset is part
+	// of the mark, so this still applies when Total is one and Rank is unused.
 	row := func(m Mark) int {
+		y := top
 		if m.Total > 1 {
-			return top + m.Rank*(bottom-top)/(m.Total-1)
+			y += m.Rank * (bottom - top) / (m.Total - 1)
 		}
-		return top
+		return max(top-1, y-m.Drip)
 	}
 	// Draw only recorded parent paths. Each path cell shows the union of the
 	// recorded segments through it, so a bend never hides a through path and
@@ -327,10 +352,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			style = Selected
 		}
 		x := xpos(m.Lane)
-		y := top
-		if m.Total > 1 {
-			y += m.Rank * (bottom - top) / (m.Total - 1)
-		}
+		y := row(m)
 		switch m.Kind {
 		case "pr":
 			y = min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
@@ -355,8 +377,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		case "run":
 			glyph := m.Glyph
 			if m.Running {
-				cycle := []rune{'◌', '◔', '◑', '◕'}
-				glyph = cycle[((frameIndex%32)+32)%32/8]
+				glyph = pulseGlyph(frameIndex)
 				if ((frameIndex%32)+32)%32 < 16 && !selected {
 					style = Faded
 				}
