@@ -57,7 +57,32 @@ func Generate(seed int64, branches, commits, prs, runs int) repo.Snapshot {
 		if branches > 1 {
 			head = 1 + r.Intn(branches-1)
 		}
-		s.PullRequests = append(s.PullRequests, repo.PullRequest{Number: i + 1, Head: s.Branches[head].Name, Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}})
+		// Seeded review states so golden frames exercise every review mark
+		// and the resolution rule: the last recorded review per author
+		// decides that reviewer's say, and a later reviewer's request
+		// outweighs an earlier approval. Eight classes match the eight
+		// compressed convergence rows at 100x30, so a row resolves to one
+		// state and replay shows ▽ as well as ▼ and ⊗; the classes still
+		// cover no review, commented, dismissed, a same-reviewer redecision
+		// back to approval and a later reviewer's request.
+		var reviews []repo.Review
+		switch i % 8 {
+		case 1:
+			// waiting: no recorded review
+		case 2:
+			reviews = []repo.Review{{Author: "sage", State: "commented"}}
+		case 3:
+			reviews = []repo.Review{{Author: "sage", State: "changes_requested"}}
+		case 4:
+			reviews = []repo.Review{{Author: "sage", State: "changes_requested"}, {Author: "sage", State: "approved"}}
+		case 5:
+			reviews = []repo.Review{{Author: "sage", State: "approved"}, {Author: "pat", State: "changes_requested"}}
+		case 6:
+			reviews = []repo.Review{{Author: "sage", State: "approved"}, {Author: "sage", State: "dismissed"}}
+		default:
+			reviews = []repo.Review{{Author: "sage", State: "approved"}}
+		}
+		s.PullRequests = append(s.PullRequests, repo.PullRequest{Number: i + 1, Head: s.Branches[head].Name, Base: "main", State: "open", Reviews: reviews})
 	}
 	// Keep the first pull request on a lane visible at the default viewport so
 	// replay frames exercise a linked spring feeding its flow even in a busy

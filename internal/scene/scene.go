@@ -60,6 +60,10 @@ type Mark struct {
 	Glyph     rune
 	Style     Style
 	Running   bool
+	// Review is the flow-level review state of a pull request, resolved by
+	// Build from its recorded reviews; other kinds carry the zero value
+	// (waiting), which only the pull-request drawing consults.
+	Review ReviewState
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.
@@ -143,11 +147,17 @@ func Build(s repo.Snapshot) Scene {
 		}
 	}
 	for i, p := range s.PullRequests {
+		review := ReviewStateOf(p.Reviews)
 		reviews := make([]string, 0, len(p.Reviews))
 		for _, r := range p.Reviews {
 			reviews = append(reviews, r.Author+": "+r.State)
 		}
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: fmt.Sprintf("#%d %s → %s · %s · %s", p.Number, p.Head, p.Base, p.State, strings.Join(reviews, ", ")), Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Style: Fresh})
+		detail := fmt.Sprintf("#%d %s → %s · %s", p.Number, p.Head, p.Base, p.State)
+		if len(reviews) > 0 {
+			detail += " · " + strings.Join(reviews, ", ")
+		}
+		detail += " · " + reviewWord(review)
+		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: detail, Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Review: review, Style: Fresh})
 	}
 	// Issues follow PRs so a closing reference resolves to the same head lane.
 	out.Marks = append(out.Marks, buildIssues(s, addLane)...)
@@ -310,6 +320,62 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			}
 		}
 	}
+	// Compressed rows can bring several pull requests to the same base cell.
+	// A single review arrow there would describe only the last PR drawn while
+	// an earlier PR's diamond and path still visibly end at that cell, so one
+	// flow's state would read as another's. When the flows meeting at a cell
+	// resolved to different states, no arrow speaks for the convergence: the
+	// cell keeps its plain path run and each state stays in its PR's details.
+	// Flows that agree at a cell keep the shared arrow, which is true for every
+	// one ending there. A departing PR still draws its diamond and path through
+	// the 32-frame fade, so it counts here too: a settled flow must not wear a
+	// different state's mark just because the flow it shares the cell with is
+	// on its way out. An offscreen base carries a direction indicator, not a
+	// review mark.
+	prEndpoint := func(m Mark) (int, int) {
+		y := min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
+		bx := max(0, min(width-1, xpos(m.Base)))
+		return bx, y
+	}
+	endpointStates := map[[2]int]map[ReviewState]bool{}
+	for _, m := range s.Marks {
+		if m.Kind != "pr" || !visible(m.Lane) {
+			continue
+		}
+		if m.Base < start || m.Base >= start+count {
+			continue
+		}
+		bx, y := prEndpoint(m)
+		if endpointStates[[2]int{bx, y}] == nil {
+			endpointStates[[2]int{bx, y}] = map[ReviewState]bool{}
+		}
+		endpointStates[[2]int{bx, y}][m.Review] = true
+	}
+	// A convergence mark must not replace another pull request's head diamond.
+	// At a compact height every flow shares a row, so a PR whose base lane is a
+	// different PR's head lands its review arrow exactly on that PR's diamond.
+	// The diamond names its pull request, so it stays and the converging PR's
+	// state lives in its details instead — just like a disputed convergence.
+	// A surviving head suppresses every mark. A departing head suppresses only
+	// marks in its own fading layer: those are drawn before the surviving paths,
+	// so the diamond is still visible then. A surviving convergence mark cannot
+	// share a departing diamond's cell, because its own flow's path has already
+	// painted over that base cell; suppressing it would leave the cell as a
+	// plain run until the fade ended.
+	headCells := map[[2]int]bool{}
+	departingHeadCells := map[[2]int]bool{}
+	for _, m := range s.Marks {
+		if m.Kind != "pr" || !visible(m.Lane) {
+			continue
+		}
+		_, y := prEndpoint(m)
+		cell := [2]int{xpos(m.Lane), y}
+		if m.Departing {
+			departingHeadCells[cell] = true
+		} else {
+			headCells[cell] = true
+		}
+	}
 	for _, c := range cells {
 		glyph := '─'
 		switch {
@@ -340,7 +406,12 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		}
 		put(c.x, c.y, glyph, style)
 	}
-	draw := func(m Mark, selected bool) {
+	// draw paints a mark. For a PR, path paints only its horizontal flow and
+	// returns; otherwise it paints the convergence mark, diamond and label.
+	// Splitting the two lets every path settle before any mark is drawn, so a
+	// later flow cannot write '─' over an earlier flow's arrow at a different
+	// base that its path merely crosses on a compressed row.
+	draw := func(m Mark, selected, path bool) {
 		if m.Kind == "issue" {
 			return // springs and closing-reference feeds are drawn by drawIssues
 		}
@@ -355,21 +426,47 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		y := row(m)
 		switch m.Kind {
 		case "pr":
-			y = min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
-			bx := xpos(m.Base)
-			bx = max(0, min(width-1, bx))
-			for xx := min(x, bx); xx <= max(x, bx); xx++ {
-				put(xx, y, '─', style)
+			bx, by := prEndpoint(m)
+			if path {
+				for xx := min(x, bx); xx <= max(x, bx); xx++ {
+					put(xx, by, '─', style)
+				}
+				return
 			}
-			arrow := '▼'
-			if m.Base < start {
-				arrow = '‹'
-			} else if m.Base >= start+count {
-				arrow = '›'
+			arrow := convergenceGlyph(m.Review)
+			onScreenBase := m.Base >= start && m.Base < start+count
+			if !onScreenBase {
+				if m.Base < start {
+					arrow = '‹'
+				} else {
+					arrow = '›'
+				}
 			}
-			put(bx, y, arrow, style)
-			put(x, y, m.Glyph, style)
-			label(x+1, y-1, m.Label, span-2, style)
+			// The review state colors the convergence mark of a settled flow;
+			// a fading flow (entering or departing during a change) keeps its
+			// dim style so the mark fades with the diamond and path it belongs
+			// to. An offscreen base keeps the plain indicator, and a selected
+			// PR keeps the selected style on everything it draws.
+			arrowStyle := style
+			if !selected && style != Faded && onScreenBase {
+				arrowStyle = reviewStyle(m.Review, style)
+			}
+			// A cell joining flows with differing states credits no single PR:
+			// leave the plain path run instead of capping an earlier flow with
+			// a later or departing flow's mark. endpointStates counts every
+			// visible flow, including ones fading out, because their diamond
+			// and path still visibly end at that cell. The same cell may instead
+			// be another PR's head: the diamond names that PR, so a review mark
+			// must not cover it whichever flow is selected. In both cases the
+			// converging PR's state stays in its details; its diamond, path and
+			// number keep their own (or the selected) style.
+			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, by}]) > 1
+			headCollision := onScreenBase && (headCells[[2]int{bx, by}] || (m.Departing && departingHeadCells[[2]int{bx, by}]))
+			if !sharedDisagreement && !headCollision {
+				put(bx, by, arrow, arrowStyle)
+			}
+			put(x, by, m.Glyph, style)
+			label(x+1, by-1, m.Label, span-2, style)
 		case "release", "deployment":
 			y = height - 2
 			put(x, y, m.Glyph, style)
@@ -387,14 +484,40 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			put(x, y, m.Glyph, style)
 		}
 	}
-	for _, m := range s.Marks {
-		draw(m, false)
-	}
-	for _, m := range s.Marks {
-		if m.ID == s.SelectedID {
-			draw(m, true)
+	// Draw in two layers, fading first and surviving second, so everything
+	// leaving the scene sits beneath everything that stays. Within a layer,
+	// every PR path goes down before any mark, so a crossing path cannot erase
+	// another flow's arrow, diamond or number label; the selected path goes
+	// after the other paths but still before every mark, so its whole flow
+	// keeps the selected style without covering another flow's mark. The
+	// layering matters for a departing PR whose convergence mark sits on a
+	// surviving flow's path: drawing the fading layer first lets that path
+	// keep the cell instead of being crossed out by a dim arrow that is on
+	// its way out.
+	drawLayer := func(departing bool) {
+		for _, m := range s.Marks {
+			if m.Kind == "pr" && m.Departing == departing && m.ID != s.SelectedID {
+				draw(m, false, true)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Kind == "pr" && m.Departing == departing && m.ID == s.SelectedID {
+				draw(m, true, true)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Departing == departing && m.ID != s.SelectedID {
+				draw(m, false, false)
+			}
+		}
+		for _, m := range s.Marks {
+			if m.Departing == departing && m.ID == s.SelectedID {
+				draw(m, true, false)
+			}
 		}
 	}
+	drawLayer(true)
+	drawLayer(false)
 	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, span: span, xpos: xpos, visible: visible})
 	return g
 }
