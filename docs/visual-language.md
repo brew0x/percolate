@@ -5,7 +5,8 @@
 | Branch name | Branch | Lane, in snapshot branch order. Commits and PRs referencing missing branches introduce a lane. |
 | `│ ─ ╭ ╮ ╰ ╯ ├ ┤ ┬ ┴ ┼` in the commit region | Commit parent link | Paths connect recorded commits to known parents. Cross-lane parents form rounded fork or merge elbows at the parent row: each corner points back at the child commit and across at the parent. A cell carrying several recorded segments shows their union as a junction (`├` branch right, `┤` branch left, `┬` `┴` `┼` three-way), so no recorded path hides another. Missing parents draw no path. |
 | `●` | Commit | Newest at top, descending timestamp; SHA breaks timestamp ties. Position is global commit rank, not elapsed time; parent endpoints share the same row across lanes. |
-| `◇`, `─`, `▼`, `#N` | Pull request | Diamond at head, path toward base, arrow at base. PR number labels the path. All recorded states retain their path; state and reviews are in details. |
+| `◇`, `─`, `#N` | Pull request | Diamond at head, path toward base, review mark at the base end. PR number labels the path. All recorded states retain their path; PR state, reviews and the resolved review state are in details. |
+| `▽` `▼` `⊗` at the base end of a pull request's flow | The pull request's recorded reviews, resolved | The convergence mark reports the review state of the flow where it meets the base lane: `▽` waiting (no recorded review, or no reviewer's latest recorded review approves or requests changes), `▼` approved, `⊗` changes requested. The snapshot's review order is the recorded history: the last recorded review per reviewer decides that reviewer's say, no wall clock is consulted, and reviewers who decided both ways leave the flow at changes requested. The mark sits exactly where the flow meets the base; the waiting and approved arrows keep pointing into the base and differ only in fill, while changes requested crosses the convergence out. The mark uses the pass palette when approved and the fail one when changes are requested, and the flow's own style while waiting. A base beyond the viewport keeps the plain `‹`/`›` indicator, and a selected pull request keeps the selected style on its whole flow. |
 | `‹`, `›` | Pull request | Base lies beyond this viewport; path continues toward it. |
 | `∿ #N` (fresh) | Open issue with a recorded closing reference | Small spring on the shelf above the pull request's head lane; `N` is the issue number. A dotted `⋮` feed runs down that lane into the pull request's flow, stopping above its diamond. The layer draws last but only fills cells that are empty or its own: a commit dripping through the shelf during a change keeps the cell, and the spring reappears whole once the cell frees. |
 | `⋮` | Closing reference feed | Recorded link from an issue to the pull request whose reference names it. Drawn only in empty cells, so commits and parent paths occlude it rather than merge with it. A pull request that is leaving the scene answers only its own fading issue's reference; a departed pull request never carries a surviving issue's feed. |
@@ -70,6 +71,8 @@ commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
 Details report only recorded fields: a run without a recorded job list says
 `jobs not recorded` rather than a numeric zero, and a deployment without a
-recorded state leaves it blank. A pull request shows at most the ten most
+recorded state leaves it blank. A pull request lists its recorded reviews and
+adds the resolved review state (`reviews: waiting`, `reviews: approved`,
+`reviews: changes requested`) — the same fact its convergence mark draws. A pull request shows at most the ten most
 recent recorded reviews; older reviews are not present in the snapshot, so the
 list is never a claim about the full review history.

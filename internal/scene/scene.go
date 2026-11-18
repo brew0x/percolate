@@ -60,6 +60,10 @@ type Mark struct {
 	Glyph     rune
 	Style     Style
 	Running   bool
+	// Review is the flow-level review state of a pull request, resolved by
+	// Build from its recorded reviews; other kinds carry the zero value
+	// (waiting), which only the pull-request drawing consults.
+	Review ReviewState
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.
@@ -143,11 +147,17 @@ func Build(s repo.Snapshot) Scene {
 		}
 	}
 	for i, p := range s.PullRequests {
+		review := ReviewStateOf(p.Reviews)
 		reviews := make([]string, 0, len(p.Reviews))
 		for _, r := range p.Reviews {
 			reviews = append(reviews, r.Author+": "+r.State)
 		}
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: fmt.Sprintf("#%d %s → %s · %s · %s", p.Number, p.Head, p.Base, p.State, strings.Join(reviews, ", ")), Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Style: Fresh})
+		detail := fmt.Sprintf("#%d %s → %s · %s", p.Number, p.Head, p.Base, p.State)
+		if len(reviews) > 0 {
+			detail += " · " + strings.Join(reviews, ", ")
+		}
+		detail += " · " + reviewWord(review)
+		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: detail, Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Review: review, Style: Fresh})
 	}
 	// Issues follow PRs so a closing reference resolves to the same head lane.
 	out.Marks = append(out.Marks, buildIssues(s, addLane)...)
@@ -361,13 +371,20 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			for xx := min(x, bx); xx <= max(x, bx); xx++ {
 				put(xx, y, '─', style)
 			}
-			arrow := '▼'
+			arrow := convergenceGlyph(m.Review)
 			if m.Base < start {
 				arrow = '‹'
 			} else if m.Base >= start+count {
 				arrow = '›'
 			}
-			put(bx, y, arrow, style)
+			// The review state colors the convergence mark; an offscreen base
+			// keeps the plain indicator, and a selected PR keeps the selected
+			// style on everything it draws.
+			arrowStyle := style
+			if !selected && arrow != '‹' && arrow != '›' {
+				arrowStyle = reviewStyle(m.Review, style)
+			}
+			put(bx, y, arrow, arrowStyle)
 			put(x, y, m.Glyph, style)
 			label(x+1, y-1, m.Label, span-2, style)
 		case "release", "deployment":
