@@ -356,14 +356,38 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	// different PR's head lands its review arrow exactly on that PR's diamond.
 	// The diamond names its pull request, so it stays and the converging PR's
 	// state lives in its details instead — just like a disputed convergence.
-	// Departing flows count while their diamond is still visible.
+	// A departing flow counts only while its diamond is still visible: a
+	// surviving path drawn in the later layer paints over it, and the cell then
+	// belongs to that surviving flow rather than to a diamond on its way out.
 	headCells := map[[2]int]bool{}
+	departingHeadCells := map[[2]int]bool{}
 	for _, m := range s.Marks {
 		if m.Kind != "pr" || !visible(m.Lane) {
 			continue
 		}
 		_, y := prEndpoint(m)
-		headCells[[2]int{xpos(m.Lane), y}] = true
+		cell := [2]int{xpos(m.Lane), y}
+		if m.Departing {
+			departingHeadCells[cell] = true
+		} else {
+			headCells[cell] = true
+		}
+	}
+	survivingPath := map[[2]int]bool{}
+	for _, m := range s.Marks {
+		if m.Kind != "pr" || m.Departing || !visible(m.Lane) {
+			continue
+		}
+		bx, by := prEndpoint(m)
+		x := xpos(m.Lane)
+		for xx := min(x, bx); xx <= max(x, bx); xx++ {
+			survivingPath[[2]int{xx, by}] = true
+		}
+	}
+	for cell := range departingHeadCells {
+		if !survivingPath[cell] {
+			headCells[cell] = true
+		}
 	}
 	for _, c := range cells {
 		glyph := '─'
