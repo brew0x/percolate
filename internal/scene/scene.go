@@ -320,6 +320,35 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			}
 		}
 	}
+	// Compressed rows can bring several pull requests to the same base cell.
+	// A single review arrow there would describe only the last PR drawn while
+	// an earlier PR's diamond and path still visibly end at that cell, so one
+	// flow's state would read as another's. When the PRs meeting at a cell
+	// resolved to different states, no arrow speaks for the convergence: the
+	// cell keeps its plain path run and each state stays in its PR's details.
+	// PRs that agree at a cell keep the shared arrow, which is true for every
+	// flow ending there. Departing PRs draw beneath the settled ones and never
+	// claim a cell; an offscreen base carries a direction indicator, not a
+	// review mark.
+	prEndpoint := func(m Mark) (int, int) {
+		y := min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
+		bx := max(0, min(width-1, xpos(m.Base)))
+		return bx, y
+	}
+	endpointStates := map[[2]int]map[ReviewState]bool{}
+	for _, m := range s.Marks {
+		if m.Kind != "pr" || m.Departing || !visible(m.Lane) {
+			continue
+		}
+		if m.Base < start || m.Base >= start+count {
+			continue
+		}
+		bx, y := prEndpoint(m)
+		if endpointStates[[2]int{bx, y}] == nil {
+			endpointStates[[2]int{bx, y}] = map[ReviewState]bool{}
+		}
+		endpointStates[[2]int{bx, y}][m.Review] = true
+	}
 	for _, c := range cells {
 		glyph := '─'
 		switch {
@@ -365,17 +394,18 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		y := row(m)
 		switch m.Kind {
 		case "pr":
-			y = min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
-			bx := xpos(m.Base)
-			bx = max(0, min(width-1, bx))
+			bx, y := prEndpoint(m)
 			for xx := min(x, bx); xx <= max(x, bx); xx++ {
 				put(xx, y, '─', style)
 			}
 			arrow := convergenceGlyph(m.Review)
-			if m.Base < start {
-				arrow = '‹'
-			} else if m.Base >= start+count {
-				arrow = '›'
+			onScreenBase := m.Base >= start && m.Base < start+count
+			if !onScreenBase {
+				if m.Base < start {
+					arrow = '‹'
+				} else {
+					arrow = '›'
+				}
 			}
 			// The review state colors the convergence mark of a settled flow;
 			// a fading flow (entering or departing during a change) keeps its
@@ -383,10 +413,17 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			// to. An offscreen base keeps the plain indicator, and a selected
 			// PR keeps the selected style on everything it draws.
 			arrowStyle := style
-			if !selected && style != Faded && arrow != '‹' && arrow != '›' {
+			if !selected && style != Faded && onScreenBase {
 				arrowStyle = reviewStyle(m.Review, style)
 			}
-			put(bx, y, arrow, arrowStyle)
+			// A cell joining flows with differing states credits no single PR:
+			// leave the plain path run instead of capping an earlier flow with
+			// a later PR's mark. The selected PR still draws last in the
+			// selected style, so its mark remains its own and inspectable.
+			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, y}]) > 1
+			if !sharedDisagreement || selected {
+				put(bx, y, arrow, arrowStyle)
+			}
 			put(x, y, m.Glyph, style)
 			label(x+1, y-1, m.Label, span-2, style)
 		case "release", "deployment":

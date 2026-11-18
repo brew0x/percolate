@@ -87,6 +87,73 @@ func TestReviewMarksOnTheFlow(t *testing.T) {
 	}
 }
 
+// Compressed rows can make several pull requests converge on the same base
+// cell. When they resolve to different review states, the shared cell must not
+// show one flow's mark at the end of another's still-visible path: both flows
+// remain drawn, but neither is credited with the other's state.
+func TestSharedConvergenceDoesNotMisattribute(t *testing.T) {
+	mk := func(number int, head, state string) repo.PullRequest {
+		p := repo.PullRequest{Number: number, Head: head, Base: "main", State: "open"}
+		if state != "" {
+			p.Reviews = []repo.Review{{Author: "sage", State: state}}
+		}
+		return p
+	}
+	s := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}, {Name: "w3"}},
+		// At height 20 ranks 0 and 4 share the compressed row 13. PR #1
+		// (approved, head w2) and PR #5 (waiting, head w1) both converge on
+		// main at the same cell. The waiting PR is drawn later and its shorter
+		// path leaves the approved PR's far diamond visible: this is the busy
+		// golden's #73/#81 shape.
+		PullRequests: []repo.PullRequest{
+			mk(1, "w2", "approved"),
+			mk(2, "w1", ""),
+			mk(3, "w2", ""),
+			mk(4, "w3", ""),
+			mk(5, "w1", ""),
+		},
+	}
+	g := scene.Frame(scene.Build(s), 0, 60, 20)
+	// Both flows are still visible: the diamonds at their head lanes survive.
+	if got := g[13][31]; got.Rune != '◇' {
+		t.Fatalf("approved flow diamond lost: %q", got)
+	}
+	if got := g[13][17]; got.Rune != '◇' {
+		t.Fatalf("waiting flow diamond lost: %q", got)
+	}
+	// The shared base cell carries neither review mark, only the path run.
+	if got := g[13][3]; got.Rune != '─' {
+		t.Fatalf("shared convergence misattributed a review state: %q", got)
+	}
+}
+
+// Flows that agree on state at a shared convergence keep the mark: it is true
+// for every flow ending there, so there is no attribution to resolve.
+func TestAgreedConvergenceKeepsMark(t *testing.T) {
+	mk := func(number int, head, state string) repo.PullRequest {
+		p := repo.PullRequest{Number: number, Head: head, Base: "main", State: "open"}
+		if state != "" {
+			p.Reviews = []repo.Review{{Author: "sage", State: state}}
+		}
+		return p
+	}
+	s := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}, {Name: "w3"}},
+		PullRequests: []repo.PullRequest{
+			mk(1, "w1", "approved"),
+			mk(2, "w1", ""),
+			mk(3, "w2", ""),
+			mk(4, "w3", ""),
+			mk(5, "w2", "approved"), // agrees with PR #1 at row 13
+		},
+	}
+	g := scene.Frame(scene.Build(s), 0, 60, 20)
+	if got := g[13][3]; got.Rune != '▼' || got.Style != scene.Pass {
+		t.Fatalf("agreed convergence lost its approved mark: %q", got)
+	}
+}
+
 // A selected pull request keeps the selected style on its whole flow,
 // including the convergence mark.
 func TestSelectedReviewMarkStaysSelected(t *testing.T) {
