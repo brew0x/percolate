@@ -68,6 +68,13 @@ type Mark struct {
 	// snapshot has no job list, so Frame falls back to the run's aggregate
 	// glyph; an explicitly empty list also draws no job cells.
 	Jobs []JobMark
+	// Artifacts holds the recorded names of a release's published files, in
+	// snapshot order. Other kinds leave it empty.
+	Artifacts []string
+	// ReleaseTag names the release a deployment flows out of, matched by the
+	// recorded head commit. Empty when no release records that commit, so the
+	// deployment stands alone instead of borrowing a flow.
+	ReleaseTag string
 }
 
 // Link is a recorded commit-parent edge; missing parents never invent junctions.
@@ -166,20 +173,7 @@ func Build(s repo.Snapshot) Scene {
 	// Issues follow PRs so a closing reference resolves to the same head lane.
 	out.Marks = append(out.Marks, buildIssues(s, addLane)...)
 	out.Marks = append(out.Marks, buildRuns(s, bySHA, addLane)...)
-	for _, r := range s.Releases {
-		anchor, ok := bySHA[r.HeadSHA]
-		if !ok {
-			anchor.Lane = addLane("unlinked")
-		}
-		out.Marks = append(out.Marks, Mark{ID: "release:" + r.Tag, Kind: "release", Label: r.Tag, Detail: r.Tag + " · " + r.HeadSHA, Lane: anchor.Lane, Glyph: '◆', Style: ReleaseStyle})
-	}
-	for _, d := range s.Deployments {
-		anchor, ok := bySHA[d.HeadSHA]
-		if !ok {
-			anchor.Lane = addLane("unlinked")
-		}
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("deployment:%d", d.ID), Kind: "deployment", Label: d.Environment, Detail: fmt.Sprintf("%s · %s · %s", d.Environment, d.State, d.HeadSHA), Lane: anchor.Lane, Glyph: '▣', Style: ReleaseStyle})
-	}
+	out.Marks = append(out.Marks, buildReleases(s, addLane, bySHA)...)
 	return out
 }
 func short(s string) string {
@@ -362,8 +356,8 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	// later flow cannot write '─' over an earlier flow's arrow at a different
 	// base that its path merely crosses on a compressed row.
 	draw := func(m Mark, selected, path bool) {
-		if m.Kind == "issue" {
-			return // springs and closing-reference feeds are drawn by drawIssues
+		if m.Kind == "issue" || m.Kind == "release" || m.Kind == "deployment" {
+			return // drawn by drawIssues and drawReleases after the other marks
 		}
 		if !visible(m.Lane) {
 			return
@@ -417,10 +411,6 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			}
 			put(x, by, m.Glyph, style)
 			label(x+1, by-1, m.Label, lay.widthOf(m.Lane)-2, style)
-		case "release", "deployment":
-			y = height - 2
-			put(x, y, m.Glyph, style)
-			label(x+2, y, m.Label, lay.widthOf(m.Lane)-3, style)
 		case "run":
 			if cells := runCells(m, frameIndex, max(1, lay.widthOf(m.Lane)-2), selected); len(cells) > 0 {
 				for i, c := range cells {
@@ -474,6 +464,10 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	}
 	drawLayer(true)
 	drawLayer(false)
+	drawReleases(g, s, releaseView{
+		width: width, height: height, bottom: bottom,
+		widthOf: lay.widthOf, xpos: xpos, visible: visible,
+	})
 	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, widthOf: lay.widthOf, xpos: xpos, visible: visible})
 	return g
 }

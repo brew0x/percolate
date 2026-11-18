@@ -1,7 +1,10 @@
 // Package repo defines recorded repository state, independent of its source.
 package repo
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Branch struct {
 	Name string `json:"name"`
@@ -62,10 +65,18 @@ type WorkflowRun struct {
 	Conclusion string `json:"conclusion"`
 	Jobs       []Job  `json:"jobs"`
 }
+
+// Artifact is one recorded file published with a release. Only its name is
+// recorded: no contents, size or download count is inferred from it.
+type Artifact struct {
+	Name string `json:"name"`
+}
+
 type Release struct {
-	Tag     string    `json:"tag"`
-	HeadSHA string    `json:"head_sha"`
-	Time    time.Time `json:"time"`
+	Tag       string     `json:"tag"`
+	HeadSHA   string     `json:"head_sha"`
+	Time      time.Time  `json:"time"`
+	Artifacts []Artifact `json:"artifacts"`
 }
 type Deployment struct {
 	ID          int64  `json:"id"`
@@ -73,6 +84,30 @@ type Deployment struct {
 	Environment string `json:"environment"`
 	State       string `json:"state"`
 }
+
+// Succeeded reports whether the snapshot recorded a successful deployment.
+func (d Deployment) Succeeded() bool { return strings.ToLower(d.State) == "success" }
+
+// Failed reports whether the snapshot recorded a failed deployment. Cancelled,
+// inactive and unknown states are not failures; they keep a neutral mark.
+func (d Deployment) Failed() bool {
+	switch strings.ToLower(d.State) {
+	case "failure", "error":
+		return true
+	}
+	return false
+}
+
+// Pending reports whether the snapshot recorded a deployment still in flight.
+// An unrecorded state is not pending: no activity is implied by missing data.
+func (d Deployment) Pending() bool {
+	switch strings.ToLower(d.State) {
+	case "queued", "pending", "in_progress":
+		return true
+	}
+	return false
+}
+
 type Snapshot struct {
 	Now          time.Time     `json:"now"`
 	Branches     []Branch      `json:"branches"`

@@ -38,6 +38,14 @@ failed builds) that the public recording does not. `busy` has 40 branches,
 runs but carries 500 PRs so the at-scale replay and frame budget are checked
 against hundreds of things in flight. No private data is involved.
 
+## `release.json` — fictional releases, artifacts and deployments
+
+A hand-written fictional snapshot: two published releases on two branches, two
+and one recorded artifacts, and five deployments — three flowing out of the
+first release with success, in-progress and failure states, one out of the
+second, and one with no matching release standing alone. It exercises the
+bottom band at every replay size. No private data is involved.
+
 ## `jobs.json` — fictional job states
 
 A hand-written fictional snapshot showing workflow runs that record their

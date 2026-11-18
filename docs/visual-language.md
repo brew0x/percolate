@@ -16,8 +16,10 @@
 | `✕` | Completed failed workflow or job | Conclusion failure, timed_out, or startup_failure. |
 | `−` | Other completed workflow or job | Cancelled, skipped, neutral, or another conclusion; never implies success. |
 | Job cells two columns right of a commit | A workflow run's recorded jobs | A run with a recorded job list breaks into one cell per job in snapshot order; each uses its own recorded status and conclusion, so a running job pulses while a finished job beside it holds its outcome. A run without a recorded job list keeps one aggregate mark. If more jobs are recorded than fit before the next lane, the last cell carries a failure mark when a displaced job failed, otherwise the run's own outcome, so a hidden failure is never invisible. |
-| `◆ tag` | Release | At the bottom of the lane containing its head commit. |
-| `▣ environment` | Deployment | At the bottom of the lane containing its head commit; state in details. |
+| `◆ tag` | Release | At the bottom of the lane containing its head commit, gathering the deployments that record the same head SHA. Releases with no recorded SHA use an `unlinked` lane. |
+| `▤ name` | Published release artifact | One row above its release per recorded artifact, nearest the release first in snapshot order, using the release's lane and style. A row at or above the commit region is not claimed, and an artifact whose whole run is occupied by a path or flow is left out of the strip; the full list is in the release's details. A release with no recorded artifacts says so there rather than drawing an empty name. |
+| `─▣ environment` | Deployment flowing out of a release | On the release's bottom row, one branch per deployment in snapshot order, joined to `◆` by a `─` connector. The link comes only from an equal recorded head SHA; the first release in snapshot order owns a shared commit. A deployment with no matching release instead keeps a standalone `▣ environment` at the lane bottom, drawn only where that row is free. If the named strip does not fit, environment names are dropped first so every deployment keeps its own status-coloured `▣`; omitted deployments stay in details and navigation. |
+| `!` below a release | More recorded deployments than the strip can hold | Drawn only when even status-only branches do not fit before the next lane. It takes the fail palette when any omitted deployment failed, so a hidden failure is never invisible; otherwise it is dim. Visible branches keep their own recorded colours. |
 | Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. Where paths share a cell, the cell dims only when every path through it dims. No wall clock is consulted. |
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. A refresh keeps the same object selected when it still exists, so the highlight and any open details never jump to a different object on their own. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
@@ -33,8 +35,17 @@ same branch name.
 CI sits two columns right of its commit; a run with recorded jobs extends that
 strip one cell per job in snapshot order. Releases or runs whose SHA is absent
 use an explicit `unlinked` lane. Commit and PR paths use separate vertical
-regions; releases collect at the bottom. Branch names and object labels truncate
-to their lane width. Plain rendering preserves glyphs while omitting colors.
+regions; releases collect at the bottom with their artifacts stacked above and
+their deployments flowing out along the release row. Branch names and object
+labels truncate to their lane width. Plain rendering preserves glyphs while
+omitting colors.
+
+A deployment's recorded state colours its whole branch: `success` uses the pass
+palette, `failure` and `error` the fail palette, and `queued`, `pending` and
+`in_progress` the in-flight palette. Any other or unrecorded state keeps the
+neutral deployment palette, so missing status never reads as success. The glyph
+does not pulse: only recorded running CI has a moving glyph. A deployment that
+is forming or leaving a refresh draws dim with its branch, whatever its state.
 
 An issue feeds a pull request only when the snapshot records a closing
 reference naming a pull request that is present; the scene never guesses a link
@@ -76,8 +87,9 @@ issue layer only fills cells that are empty or its own. Vertical positions
 compress to available rows; very small terminals show only the title. Resize
 recomputes the same scene at the new dimensions.
 
-Palette IDs: 0 plain, 1 lane, 2 fresh, 3 faded, 4 pass, 5 fail, 6 pulse,
-7 release/deployment, 8 selected. A frame is the runes **and** these IDs.
+Palette IDs: 0 plain, 1 lane, 2 fresh, 3 faded, 4 pass, 5 fail, 6 in-flight
+(pulse) deployment or running CI, 7 release and neutral deployment, 8 selected.
+A frame is the runes **and** these IDs.
 No mark moves merely to decorate the landscape. Only recorded running CI pulses,
 and only a recorded change between two snapshots animates: a live refresh draws
 the 32-frame transition, then holds exactly the new snapshot. Fixtures and
@@ -88,8 +100,10 @@ merged lane ends at its merge path; no merge is inferred from PR state. A newer
 commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
 Details report only recorded fields: a run without a recorded job list says
-`jobs not recorded` rather than a numeric zero, and a deployment without a
-recorded state leaves it blank. A run that records failing jobs names them in
+`jobs not recorded` rather than a numeric zero, a release without recorded
+artifacts says `artifacts not recorded` instead of an empty name, and a
+deployment without a recorded state leaves it blank. A release lists each
+recorded artifact name even when the bottom strip could not fit it. A run that records failing jobs names them in
 its details (`failing: test, lint`), matching the fail cells in its job strip. A pull request lists its recorded reviews and
 adds the resolved review state (`reviews: waiting`, `reviews: approved`,
 `reviews: changes requested`) — the same fact its convergence mark draws. A pull request shows at most the ten most
