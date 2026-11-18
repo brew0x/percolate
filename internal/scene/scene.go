@@ -356,9 +356,12 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	// different PR's head lands its review arrow exactly on that PR's diamond.
 	// The diamond names its pull request, so it stays and the converging PR's
 	// state lives in its details instead — just like a disputed convergence.
-	// A departing flow counts only while its diamond is still visible: a
-	// surviving path drawn in the later layer paints over it, and the cell then
-	// belongs to that surviving flow rather than to a diamond on its way out.
+	// A surviving head suppresses every mark. A departing head suppresses only
+	// marks in its own fading layer: those are drawn before the surviving paths,
+	// so the diamond is still visible then. A surviving convergence mark cannot
+	// share a departing diamond's cell, because its own flow's path has already
+	// painted over that base cell; suppressing it would leave the cell as a
+	// plain run until the fade ended.
 	headCells := map[[2]int]bool{}
 	departingHeadCells := map[[2]int]bool{}
 	for _, m := range s.Marks {
@@ -370,22 +373,6 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		if m.Departing {
 			departingHeadCells[cell] = true
 		} else {
-			headCells[cell] = true
-		}
-	}
-	survivingPath := map[[2]int]bool{}
-	for _, m := range s.Marks {
-		if m.Kind != "pr" || m.Departing || !visible(m.Lane) {
-			continue
-		}
-		bx, by := prEndpoint(m)
-		x := xpos(m.Lane)
-		for xx := min(x, bx); xx <= max(x, bx); xx++ {
-			survivingPath[[2]int{xx, by}] = true
-		}
-	}
-	for cell := range departingHeadCells {
-		if !survivingPath[cell] {
 			headCells[cell] = true
 		}
 	}
@@ -474,7 +461,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			// converging PR's state stays in its details; its diamond, path and
 			// number keep their own (or the selected) style.
 			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, by}]) > 1
-			headCollision := onScreenBase && headCells[[2]int{bx, by}]
+			headCollision := onScreenBase && (headCells[[2]int{bx, by}] || (m.Departing && departingHeadCells[[2]int{bx, by}]))
 			if !sharedDisagreement && !headCollision {
 				put(bx, by, arrow, arrowStyle)
 			}

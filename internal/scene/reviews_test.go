@@ -431,10 +431,12 @@ func TestReviewMarkDoesNotReplaceHeadDiamond(t *testing.T) {
 	}
 }
 
-// A departing head diamond suppresses a surviving flow's review mark only while
-// the diamond is still visible. Once a surviving path paints over that cell,
-// the cell belongs to the surviving flow and its convergence mark must return;
-// the mark must not stay absent until the fade ends.
+// A departing head diamond must not suppress a surviving flow's review mark.
+// At 60x7 a w1 -> main PR fades out while an approved w2 -> w1 PR survives; the
+// surviving path paints over the departing diamond at w1, so that cell belongs
+// to the surviving flow and its convergence mark must be there from the first
+// frame, not only after the fade ends. Selection changes the style, never the
+// claim: the mark stays on the selected survivor's whole flow.
 func TestDepartingHeadDiamondDoesNotSuppressCoveredReviewMark(t *testing.T) {
 	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
 	branches := []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}}
@@ -442,20 +444,37 @@ func TestDepartingHeadDiamondDoesNotSuppressCoveredReviewMark(t *testing.T) {
 	surviving := repo.PullRequest{Number: 2, Head: "w2", Base: "w1", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}}
 	prev := repo.Snapshot{Now: day, Branches: branches, PullRequests: []repo.PullRequest{departing, surviving}}
 	next := repo.Snapshot{Now: day.Add(time.Minute), Branches: branches, PullRequests: []repo.PullRequest{surviving}}
-	for _, frame := range []int{0, 16, 31} {
-		g := scene.Frame(scene.Transition(prev, next, frame), frame, 60, 7)
-		// At 60x7 the flows share row 3 (main 3, w1 21, w2 39). The surviving
-		// path runs w2 -> w1 over w1's column, so its approved convergence mark
-		// there must be visible even while the departed diamond is still fading.
-		if got := g[3][21]; got.Rune != '▼' || got.Style != scene.Pass {
-			t.Fatalf("frame %d: surviving review mark suppressed: %q\n%s", frame, got, g)
-		}
-		if got := g[3][39]; got.Rune != '◇' || got.Style != scene.Fresh {
-			t.Fatalf("frame %d: surviving diamond lost: %q\n%s", frame, got, g)
+	for _, selected := range []string{"", "pr:1", "pr:2"} {
+		for _, frame := range []int{0, 16, 31} {
+			built := scene.Transition(prev, next, frame)
+			built.SelectedID = selected
+			g := scene.Frame(built, frame, 60, 7)
+			// At 60x7 the flows share row 3 (main 3, w1 21, w2 39). The
+			// surviving path runs w2 -> w1 over w1's column, so its approved
+			// convergence mark there must be visible even while the departed
+			// diamond is still fading.
+			wantMarkStyle, wantDiamondStyle := scene.Pass, scene.Fresh
+			if selected == "pr:2" {
+				wantMarkStyle, wantDiamondStyle = scene.Selected, scene.Selected
+			}
+			if got := g[3][21]; got.Rune != '▼' || got.Style != wantMarkStyle {
+				t.Fatalf("selected=%q frame %d: surviving review mark suppressed: %q\n%s", selected, frame, got, g)
+			}
+			if got := g[3][39]; got.Rune != '◇' || got.Style != wantDiamondStyle {
+				t.Fatalf("selected=%q frame %d: surviving diamond lost: %q\n%s", selected, frame, got, g)
+			}
 		}
 	}
-	g := scene.Frame(scene.Transition(prev, next, scene.TransitionFrames), scene.TransitionFrames, 60, 7)
-	if got := g[3][21]; got.Rune != '▼' || got.Style != scene.Pass {
-		t.Fatalf("settled convergence lost its approved mark: %q\n%s", got, g)
+	for _, selected := range []string{"", "pr:1", "pr:2"} {
+		built := scene.Transition(prev, next, scene.TransitionFrames)
+		built.SelectedID = selected
+		g := scene.Frame(built, scene.TransitionFrames, 60, 7)
+		want := scene.Pass
+		if selected == "pr:2" {
+			want = scene.Selected
+		}
+		if got := g[3][21]; got.Rune != '▼' || got.Style != want {
+			t.Fatalf("selected=%q: settled convergence lost its approved mark: %q\n%s", selected, got, g)
+		}
 	}
 }
