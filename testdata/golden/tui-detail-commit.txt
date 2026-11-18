@@ -1,0 +1,7 @@
+commit  0000000
+  sha        0000000100000000000000000000000000000001
+  branch     main
+  author     robin
+  parents    none recorded
+  time       2026-01-20T00:00:00Z
+  github     https://github.com/acme/widgets/commit/0000000100000000000000000000000000000001

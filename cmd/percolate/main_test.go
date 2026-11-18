@@ -23,7 +23,7 @@ import (
 	"github.com/brew0x/percolate/internal/scene"
 )
 
-var _ = flag.Bool("update", false, "accepted for repository golden updates")
+var updateTUI = flag.Bool("update", false, "accepted for repository golden updates")
 
 func TestCLI(t *testing.T) {
 	for _, tt := range []struct {

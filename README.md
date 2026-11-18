@@ -89,8 +89,11 @@ in the footer and retried, and unchanged polls do not replay it. When a snapshot
 records workflow jobs, each job draws beside its run: a running job pulses, a
 failing job uses the fail mark, and the details name the failing jobs.
 
-Press arrows or tab to select a mark, enter for details, escape to close details,
-and q to quit. Selection reveals offscreen lanes. Resize the terminal freely.
+Press arrows or tab to select a mark; the mouse wheel steps through marks and a
+click or hover selects the mark under the pointer. Enter opens a panel with the
+object's recorded fields and its GitHub URL (a replay has no URL to show), `o`
+opens that URL in the browser, escape closes the panel, and q quits. Selection
+reveals offscreen lanes. Resize the terminal freely.
 
 Capture one reproducible frame without ANSI sequences:
 
