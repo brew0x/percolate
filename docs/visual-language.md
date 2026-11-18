@@ -49,7 +49,14 @@ meet the PR's diamond row or its number-label row, the spring sits above the
 lane names and no feed is drawn; neither the diamond nor the label, including a
 selected one, is ever overwritten.
 
-At scale the frame shows as many lanes as fit with at least 14 columns per lane.
+At scale the frame shows as many lanes as fit with a readable column each. A
+landscape of at most twelve lanes splits its columns evenly. A larger one
+ranks its lanes by recorded activity and shares the spare columns by that
+rank: a lane carrying more marks gets a wider column for its beads, flows and
+labels, while a quiet lane keeps a ten-column minimum and sits with its quiet
+neighbours as a soft bundle. Ties keep branch order. The activity count is the
+marks Build resolved for the lane, so no object is aggregated or invented and
+the same snapshot always lays out the same way.
 Static renders show the first lanes; navigating marks in the TUI reveals their
 head lane. Every PR remains in the scene, including offscreen ones. Dense marks
 may share cells: snapshot order wins among marks, then the selected mark draws

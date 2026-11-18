@@ -189,9 +189,6 @@ func short(s string) string {
 	return s
 }
 
-// VisibleLanes is shared by viewport navigation and rendering.
-func VisibleLanes(width int) int { return max(1, (width-4)/14) }
-
 // Frame uses no time, I/O, randomness, or terminal state. Path cells show the
 // union of the recorded segments through them; mark overlaps resolve in
 // snapshot order, and the selected object is drawn last so it is inspectable.
@@ -222,27 +219,16 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		label(0, 0, "percolate", width, Fresh)
 		return g
 	}
-	count := min(VisibleLanes(width), len(s.Lanes))
-	start := max(0, min(s.FirstLane, max(0, len(s.Lanes)-count)))
-	span := max(1, (width-4)/max(1, count))
-	xpos := func(lane int) int { return 3 + (lane-start)*span }
-	visible := func(lane int) bool { return lane >= start && lane < start+count }
+	lay := newLaneLayout(s, width, height)
+	start, count := lay.start, lay.count
+	xpos := lay.xpos
+	visible := lay.visible
+	row := lay.row
+	top, bottom := lay.top, lay.bottom
 	label(2, 0, fmt.Sprintf("PERCOLATE  %d–%d/%d", min(start+1, len(s.Lanes)), start+count, len(s.Lanes)), width-2, Faded)
 	for i := start; i < start+count; i++ {
 		x := xpos(i)
-		label(x, 2, s.Lanes[i], span-2, Fresh)
-	}
-	top, bottom := 4, max(4, height*3/5)
-	// An entering mark rests above the commit region, in the gap between the
-	// lane names and the first bead. Clamping there keeps its drip, and every
-	// parent path following it, out of the lane-name row. The offset is part
-	// of the mark, so this still applies when Total is one and Rank is unused.
-	row := func(m Mark) int {
-		y := top
-		if m.Total > 1 {
-			y += m.Rank * (bottom - top) / (m.Total - 1)
-		}
-		return max(top-1, y-m.Drip)
+		label(x, 2, s.Lanes[i], lay.widthOf(i)-2, Fresh)
 	}
 	// Draw only recorded parent paths. Each path cell shows the union of the
 	// recorded segments through it, so a bend never hides a through path and
@@ -430,13 +416,13 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 				put(bx, by, arrow, arrowStyle)
 			}
 			put(x, by, m.Glyph, style)
-			label(x+1, by-1, m.Label, span-2, style)
+			label(x+1, by-1, m.Label, lay.widthOf(m.Lane)-2, style)
 		case "release", "deployment":
 			y = height - 2
 			put(x, y, m.Glyph, style)
-			label(x+2, y, m.Label, span-3, style)
+			label(x+2, y, m.Label, lay.widthOf(m.Lane)-3, style)
 		case "run":
-			if cells := runCells(m, frameIndex, max(1, span-2), selected); len(cells) > 0 {
+			if cells := runCells(m, frameIndex, max(1, lay.widthOf(m.Lane)-2), selected); len(cells) > 0 {
 				for i, c := range cells {
 					put(x+2+i, y, c.Rune, c.Style)
 				}
@@ -488,6 +474,6 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	}
 	drawLayer(true)
 	drawLayer(false)
-	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, span: span, xpos: xpos, visible: visible})
+	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, widthOf: lay.widthOf, xpos: xpos, visible: visible})
 	return g
 }
