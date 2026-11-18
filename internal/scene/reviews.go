@@ -20,10 +20,16 @@ const (
 // is the recorded history: the last recorded review per author decides that
 // reviewer's say, and no wall clock is consulted. A pull request whose
 // reviewers have decided both ways sits at changes requested; a later
-// reviewer's request outweighs an earlier approval.
+// reviewer's request outweighs an earlier approval. A review with no recorded
+// author (GitHub's deleted reviewer) has no reviewer to hold a say, so it
+// never decides the state; collapsing those reviews into one map slot would
+// let whichever came last impersonate a named reviewer.
 func ReviewStateOf(reviews []repo.Review) ReviewState {
 	latest := make(map[string]string, len(reviews))
 	for _, r := range reviews {
+		if r.Author == "" {
+			continue
+		}
 		latest[r.Author] = r.State
 	}
 	changes, approved := false, false
