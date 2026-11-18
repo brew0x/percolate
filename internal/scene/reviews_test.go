@@ -3,6 +3,7 @@ package scene_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
@@ -28,7 +29,13 @@ func TestReviewStateResolution(t *testing.T) {
 		{"reviewer redecided to request changes", []repo.Review{{Author: "sage", State: "approved"}, {Author: "sage", State: "changes_requested"}}, scene.ReviewChanges},
 		{"later reviewer requested changes", []repo.Review{{Author: "sage", State: "approved"}, {Author: "pat", State: "changes_requested"}}, scene.ReviewChanges},
 		{"earlier request stays later", []repo.Review{{Author: "pat", State: "changes_requested"}, {Author: "sage", State: "approved"}}, scene.ReviewChanges},
-		{"deleted reviewer", []repo.Review{{Author: "", State: "approved"}}, scene.ReviewApproved},
+		// A null author is a deleted reviewer: there is no reviewer to hold a
+		// say, so it never decides. Two of them must not share one slot where
+		// the later approval would hide an earlier request.
+		{"deleted reviewer approves", []repo.Review{{Author: "", State: "approved"}}, scene.ReviewWaiting},
+		{"deleted reviewer requests changes", []repo.Review{{Author: "", State: "changes_requested"}}, scene.ReviewWaiting},
+		{"two deleted reviewers redecide", []repo.Review{{Author: "", State: "changes_requested"}, {Author: "", State: "approved"}}, scene.ReviewWaiting},
+		{"named reviewer still decides", []repo.Review{{Author: "", State: "changes_requested"}, {Author: "sage", State: "approved"}}, scene.ReviewApproved},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,4 +147,48 @@ func TestReviewStateInDetails(t *testing.T) {
 	if !strings.Contains(byID["pr:1"], "sage: approved") {
 		t.Fatalf("recorded reviews lost from details: %q", byID["pr:1"])
 	}
+}
+
+// A pull request that is forming in or fading out during a change keeps the
+// dim style on its convergence mark. The pass and fail palettes colour only a
+// settled flow; a mid-transition mark must fade with the diamond and path it
+// belongs to, never stay bright while the rest of the flow dims.
+func TestTransitionReviewMarkFadesWithFlow(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	base := repo.Snapshot{Now: day, Branches: []repo.Branch{{Name: "main"}, {Name: "topic"}}}
+	approvedPR := func() repo.Snapshot {
+		s := base
+		s.PullRequests = []repo.PullRequest{{Number: 1, Head: "topic", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}}}
+		return s
+	}
+	changesPR := func() repo.Snapshot {
+		s := base
+		s.PullRequests = []repo.PullRequest{{Number: 2, Head: "topic", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "changes_requested"}}}}
+		return s
+	}
+	cellWithRune := func(g scene.Grid, r rune) scene.Cell {
+		t.Helper()
+		for _, row := range g {
+			for _, c := range row {
+				if c.Rune == r {
+					return c
+				}
+			}
+		}
+		t.Fatalf("rune %q not found in frame", r)
+		return scene.Cell{}
+	}
+	assertFadedFlow := func(g scene.Grid, glyph rune, name string) {
+		t.Helper()
+		if got := cellWithRune(g, glyph); got.Style != scene.Faded {
+			t.Fatalf("%s convergence mark did not fade: %q", name, got)
+		}
+		if got := cellWithRune(g, '◇'); got.Style != scene.Faded {
+			t.Fatalf("%s diamond did not fade: %q", name, got)
+		}
+	}
+
+	assertFadedFlow(scene.Frame(scene.Transition(approvedPR(), base, 16), 16, 60, 20), '▼', "departing approved")
+	assertFadedFlow(scene.Frame(scene.Transition(base, approvedPR(), 0), 0, 60, 20), '▼', "entering approved")
+	assertFadedFlow(scene.Frame(scene.Transition(changesPR(), base, 16), 16, 60, 20), '⊗', "departing changes requested")
 }

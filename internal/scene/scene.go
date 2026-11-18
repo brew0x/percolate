@@ -377,11 +377,13 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			} else if m.Base >= start+count {
 				arrow = '›'
 			}
-			// The review state colors the convergence mark; an offscreen base
-			// keeps the plain indicator, and a selected PR keeps the selected
-			// style on everything it draws.
+			// The review state colors the convergence mark of a settled flow;
+			// a fading flow (entering or departing during a change) keeps its
+			// dim style so the mark fades with the diamond and path it belongs
+			// to. An offscreen base keeps the plain indicator, and a selected
+			// PR keeps the selected style on everything it draws.
 			arrowStyle := style
-			if !selected && arrow != '‹' && arrow != '›' {
+			if !selected && style != Faded && arrow != '‹' && arrow != '›' {
 				arrowStyle = reviewStyle(m.Review, style)
 			}
 			put(bx, y, arrow, arrowStyle)
