@@ -259,3 +259,68 @@ func TestTransitionReviewMarkFadesWithFlow(t *testing.T) {
 	assertFadedFlow(scene.Frame(scene.Transition(base, approvedPR(), 0), 0, 60, 20), '▼', "entering approved")
 	assertFadedFlow(scene.Frame(scene.Transition(changesPR(), base, 16), 16, 60, 20), '⊗', "departing changes requested")
 }
+
+// A pull request on its way out still draws its diamond and path throughout
+// the fade, so its state counts at a shared convergence cell. A settled flow
+// meeting that cell must not wear the departing flow's different state: at
+// 60x7 a changes-requested PR from w2 and an approved PR from w1 both converge
+// on main at the same cell while the first is fading.
+func TestDepartingFlowDoesNotLendItsReviewState(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	branches := []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}}
+	approved := repo.PullRequest{Number: 2, Head: "w1", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "approved"}}}
+	prev := repo.Snapshot{Now: day, Branches: branches, PullRequests: []repo.PullRequest{
+		{Number: 1, Head: "w2", Base: "main", State: "open", Reviews: []repo.Review{{Author: "sage", State: "changes_requested"}}},
+		approved,
+	}}
+	next := repo.Snapshot{Now: day.Add(time.Minute), Branches: branches, PullRequests: []repo.PullRequest{approved}}
+	for _, frame := range []int{0, 16, 31} {
+		g := scene.Frame(scene.Transition(prev, next, frame), frame, 60, 7)
+		// The shared base cell keeps the plain path run: the departing request
+		// never turns the survivor green, and the survivor never hides it.
+		if got := g[3][3]; got.Rune != '─' {
+			t.Fatalf("frame %d: shared convergence credited a state: %q\n%s", frame, got, g)
+		}
+		// The departing flow is still visibly drawn at this instant, which is
+		// what makes the shared cell a misattribution rather than a harmless
+		// leftover.
+		if got := g[3][39]; got.Rune != '◇' || got.Style != scene.Faded {
+			t.Fatalf("frame %d: departing diamond not visible: %q\n%s", frame, got, g)
+		}
+	}
+	// When the transition settles the departing flow is gone and the surviving
+	// approval keeps its mark at that same cell.
+	g := scene.Frame(scene.Transition(prev, next, scene.TransitionFrames), scene.TransitionFrames, 60, 7)
+	if got := g[3][3]; got.Rune != '▼' || got.Style != scene.Pass {
+		t.Fatalf("settled convergence lost its approved mark: %q\n%s", got, g)
+	}
+}
+
+// A later flow's path crossing an earlier flow's convergence on a compressed
+// row must not erase that earlier review mark, even when the two flows meet
+// at different base lanes (so no shared cell suppresses the arrow). Here an
+// approved w3 -> w1 PR at rank 0 and a w2 -> main PR at rank 4 share row 13;
+// the latter's path writes over the former's mark at w1.
+func TestCrossingPathDoesNotEraseReviewMark(t *testing.T) {
+	mk := func(number int, head, base, state string) repo.PullRequest {
+		p := repo.PullRequest{Number: number, Head: head, Base: base, State: "open"}
+		if state != "" {
+			p.Reviews = []repo.Review{{Author: "sage", State: state}}
+		}
+		return p
+	}
+	s := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}, {Name: "w1"}, {Name: "w2"}, {Name: "w3"}},
+		PullRequests: []repo.PullRequest{
+			mk(1, "w3", "w1", "approved"), // rank 0, mark at w1 (column 17, row 13)
+			mk(2, "w1", "main", ""),
+			mk(3, "w2", "main", ""),
+			mk(4, "w3", "main", ""),
+			mk(5, "w2", "main", ""), // rank 4, path crosses column 17 on row 13
+		},
+	}
+	g := scene.Frame(scene.Build(s), 0, 60, 20)
+	if got := g[13][17]; got.Rune != '▼' || got.Style != scene.Pass {
+		t.Fatalf("crossing path erased the approved mark: %q\n%s", got, g)
+	}
+}

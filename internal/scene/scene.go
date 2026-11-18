@@ -323,12 +323,14 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	// Compressed rows can bring several pull requests to the same base cell.
 	// A single review arrow there would describe only the last PR drawn while
 	// an earlier PR's diamond and path still visibly end at that cell, so one
-	// flow's state would read as another's. When the PRs meeting at a cell
+	// flow's state would read as another's. When the flows meeting at a cell
 	// resolved to different states, no arrow speaks for the convergence: the
 	// cell keeps its plain path run and each state stays in its PR's details.
-	// PRs that agree at a cell keep the shared arrow, which is true for every
-	// flow ending there. Departing PRs draw beneath the settled ones and never
-	// claim a cell; an offscreen base carries a direction indicator, not a
+	// Flows that agree at a cell keep the shared arrow, which is true for every
+	// one ending there. A departing PR still draws its diamond and path through
+	// the 32-frame fade, so it counts here too: a settled flow must not wear a
+	// different state's mark just because the flow it shares the cell with is
+	// on its way out. An offscreen base carries a direction indicator, not a
 	// review mark.
 	prEndpoint := func(m Mark) (int, int) {
 		y := min(height-4, bottom+1+m.Rank%max(1, height-bottom-4))
@@ -337,7 +339,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	}
 	endpointStates := map[[2]int]map[ReviewState]bool{}
 	for _, m := range s.Marks {
-		if m.Kind != "pr" || m.Departing || !visible(m.Lane) {
+		if m.Kind != "pr" || !visible(m.Lane) {
 			continue
 		}
 		if m.Base < start || m.Base >= start+count {
@@ -379,7 +381,12 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		}
 		put(c.x, c.y, glyph, style)
 	}
-	draw := func(m Mark, selected bool) {
+	// draw paints a mark. For a PR, path paints only its horizontal flow and
+	// returns; otherwise it paints the convergence mark, diamond and label.
+	// Splitting the two lets every path settle before any mark is drawn, so a
+	// later flow cannot write '─' over an earlier flow's arrow at a different
+	// base that its path merely crosses on a compressed row.
+	draw := func(m Mark, selected, path bool) {
 		if m.Kind == "issue" {
 			return // springs and closing-reference feeds are drawn by drawIssues
 		}
@@ -394,9 +401,12 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		y := row(m)
 		switch m.Kind {
 		case "pr":
-			bx, y := prEndpoint(m)
-			for xx := min(x, bx); xx <= max(x, bx); xx++ {
-				put(xx, y, '─', style)
+			bx, by := prEndpoint(m)
+			if path {
+				for xx := min(x, bx); xx <= max(x, bx); xx++ {
+					put(xx, by, '─', style)
+				}
+				return
 			}
 			arrow := convergenceGlyph(m.Review)
 			onScreenBase := m.Base >= start && m.Base < start+count
@@ -418,14 +428,16 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			}
 			// A cell joining flows with differing states credits no single PR:
 			// leave the plain path run instead of capping an earlier flow with
-			// a later PR's mark. The selected PR still draws last in the
-			// selected style, so its mark remains its own and inspectable.
-			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, y}]) > 1
+			// a later or departing flow's mark. endpointStates counts every
+			// visible flow, including ones fading out, because their diamond
+			// and path still visibly end at that cell. The selected PR still
+			// draws last in the selected style, so its mark stays its own.
+			sharedDisagreement := onScreenBase && len(endpointStates[[2]int{bx, by}]) > 1
 			if !sharedDisagreement || selected {
-				put(bx, y, arrow, arrowStyle)
+				put(bx, by, arrow, arrowStyle)
 			}
-			put(x, y, m.Glyph, style)
-			label(x+1, y-1, m.Label, span-2, style)
+			put(x, by, m.Glyph, style)
+			label(x+1, by-1, m.Label, span-2, style)
 		case "release", "deployment":
 			y = height - 2
 			put(x, y, m.Glyph, style)
@@ -443,12 +455,21 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 			put(x, y, m.Glyph, style)
 		}
 	}
+	// Every PR path goes down first, then every mark: an arrow is never
+	// overwritten by another flow's path crossing its cell. The selected
+	// object draws its whole flow last so it stays inspectable.
 	for _, m := range s.Marks {
-		draw(m, false)
+		if m.Kind == "pr" {
+			draw(m, false, true)
+		}
+	}
+	for _, m := range s.Marks {
+		draw(m, false, false)
 	}
 	for _, m := range s.Marks {
 		if m.ID == s.SelectedID {
-			draw(m, true)
+			draw(m, true, true)
+			draw(m, true, false)
 		}
 	}
 	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, span: span, xpos: xpos, visible: visible})
