@@ -8,7 +8,9 @@ import "sort"
 // spare columns are shared out by recorded activity: a lane carrying more
 // marks gets a wider column for its beads, flows and labels, while a quiet
 // lane keeps a narrow minimum. Quiet lanes therefore sit together as a soft
-// bundle instead of stealing room from a busy neighbour.
+// bundle instead of stealing room from a busy neighbour. Lanes beyond the
+// viewport are counted so Frame can stand the whole offscreen run as one edge
+// mark rather than hinting at each hidden lane.
 //
 // No time, randomness or terminal state is consulted: activity is the count
 // of marks already resolved by Build, so the same snapshot always lays out
@@ -30,6 +32,8 @@ type laneLayout struct {
 	widths       []int // column count of each visible lane
 	offsets      []int // bead column of each visible lane
 	top, bottom  int   // commit region bounds
+	hiddenLeft   int   // lanes before the viewport, bundled by «
+	hiddenRight  int   // lanes after the viewport, bundled by »
 }
 
 func newLaneLayout(s Scene, width, height int) laneLayout {
@@ -39,6 +43,8 @@ func newLaneLayout(s Scene, width, height int) laneLayout {
 		bottom: max(4, height*3/5),
 	}
 	l.start = max(0, min(s.FirstLane, max(0, len(s.Lanes)-l.count)))
+	l.hiddenLeft = l.start
+	l.hiddenRight = max(0, len(s.Lanes)-l.start-l.count)
 	usable := max(0, width-laneReserveX)
 	if l.count == 0 {
 		l.unit = 1

@@ -224,6 +224,18 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		x := xpos(i)
 		label(x, 2, s.Lanes[i], lay.widthOf(i)-2, Fresh)
 	}
+	// One dim mark on each viewport edge stands for the whole run of
+	// offscreen lanes on that side, so a crowded landscape reads as a soft
+	// bundle rather than a hint at every hidden lane. The edge columns are
+	// reserved (lanes begin at laneStartX and end before the right margin),
+	// so this never covers a lane name; the header above gives the exact
+	// count. No lane is invented and no object is aggregated.
+	if lay.hiddenLeft > 0 {
+		put(0, 2, '«', Faded)
+	}
+	if lay.hiddenRight > 0 {
+		put(width-1, 2, '»', Faded)
+	}
 	// Draw only recorded parent paths. Each path cell shows the union of the
 	// recorded segments through it, so a bend never hides a through path and
 	// draw order cannot erase a turn. Missing parents draw nothing; clipping

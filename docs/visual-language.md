@@ -23,6 +23,7 @@
 | Dim commit and parent path | Commit age or merged lane | Older than 48 hours relative to snapshot now, or a lane whose newest commit is a secondary parent of a commit on another lane. Paths dim if either endpoint dims. Where paths share a cell, the cell dims only when every path through it dims. No wall clock is consulted. |
 | White, bold, underlined mark | Selected object | Selected mark draws last. Enter opens recorded details. A refresh keeps the same object selected when it still exists, so the highlight and any open details never jump to a different object on their own. |
 | `PERCOLATE a–b/n` | Lane viewport | Visible lane range and total lane count. |
+| `«`, `»` at the edge of the lane-name row | Lanes beyond the viewport | One dim mark stands for the whole run of offscreen lanes on that side: `«` to the left when scrolled right, `»` to the right while lanes remain. Drawn only when such lanes exist, in the reserved edge columns so no lane name is covered; the header above gives their exact count. It is a viewport cue, not a repository object: no lane is invented and no object is aggregated. |
 | New bead forming at the top of its lane | Commit added by a refresh | For 32 frames after a live snapshot changes, a commit absent from the previous snapshot drips toward its recorded row; its parent paths and any CI anchored to it follow. It draws dim for the first half, then takes its final style. A commit landing below the top starts at the top row; a newest commit (recorded rank 0) starts one row above the commit region, clear of the lane names, so it visibly falls in instead of sitting still. The offset applies even to a repository's first commit, where rank alone is ignored. |
 | Finishing run settling | Workflow run completed by a refresh | A run that was running in the previous snapshot and is completed in the new one keeps the frame-indexed pulse for the first half of the 32-frame change, then stops and draws its recorded outcome glyph. Its recorded jobs settle with it: a job unfinished in the previous snapshot pulses alongside the run, while a job already completed keeps its recorded outcome throughout. A run still running in the new snapshot keeps pulsing for the whole change; no run freezes on a still glyph mid-transition. |
 | Object fading in place | PR, issue or commit gone after a refresh | An object present in the previous snapshot but absent from the new one draws dim in place through the 32-frame change, then leaves. Its lane is the same branch it belonged to; a lane removed in the new snapshot is kept under its own name for the fade, so nothing vanishes off-screen or drifts onto another branch. Only real lanes are kept: a mark that has no lane of its own (an unlinked issue's margin spring, or any mark's unused base) never brings a removed branch back. Fading marks draw beneath the surviving ones, so a cell shared with something that stays belongs to what stays — including a surviving flow's path under a departing review mark — except a convergence cell joining differing review states, which keeps its plain path until the fading flow is gone. No closed state is invented. |
@@ -65,9 +66,11 @@ landscape of at most twelve lanes splits its columns evenly. A larger one
 ranks its lanes by recorded activity and shares the spare columns by that
 rank: a lane carrying more marks gets a wider column for its beads, flows and
 labels, while a quiet lane keeps a ten-column minimum and sits with its quiet
-neighbours as a soft bundle. Ties keep branch order. The activity count is the
-marks Build resolved for the lane, so no object is aggregated or invented and
-the same snapshot always lays out the same way.
+neighbours as a soft bundle. Ties keep branch order. Lanes beyond the viewport
+are one dim edge mark (`«` or `») standing for the whole offscreen run, with the
+exact count in the header; they are a viewport cue, not invented lanes. The
+activity count is the marks Build resolved for the lane, so no object is
+aggregated or invented and the same snapshot always lays out the same way.
 Static renders show the first lanes; navigating marks in the TUI reveals their
 head lane. Every PR remains in the scene, including offscreen ones. Dense marks
 may share cells: snapshot order wins among marks, then the selected mark draws

@@ -44,6 +44,63 @@ func TestLaneLayoutWeightsActivityAtScale(t *testing.T) {
 	}
 }
 
+func TestLaneLayoutCountsHiddenLanes(t *testing.T) {
+	var s Scene
+	for i := 0; i < 40; i++ {
+		s.Lanes = append(s.Lanes, fmt.Sprintf("lane-%02d", i))
+	}
+	count := VisibleLanes(60)
+	lay := newLaneLayout(s, 60, 20)
+	if lay.hiddenLeft != 0 || lay.hiddenRight != 40-count {
+		t.Fatalf("first viewport hidden lanes: left=%d right=%d", lay.hiddenLeft, lay.hiddenRight)
+	}
+	s.FirstLane = 10
+	lay = newLaneLayout(s, 60, 20)
+	if lay.hiddenLeft != 10 || lay.hiddenRight != 40-10-count {
+		t.Fatalf("middle viewport hidden lanes: left=%d right=%d", lay.hiddenLeft, lay.hiddenRight)
+	}
+	s.FirstLane = 39
+	lay = newLaneLayout(s, 60, 20)
+	if lay.hiddenLeft != 40-count || lay.hiddenRight != 0 {
+		t.Fatalf("last viewport hidden lanes: left=%d right=%d", lay.hiddenLeft, lay.hiddenRight)
+	}
+	// A landscape that fits every lane hides none and draws no bundle mark.
+	lay = newLaneLayout(s, 60*40, 20)
+	if lay.hiddenLeft != 0 || lay.hiddenRight != 0 {
+		t.Fatalf("fitting landscape hid lanes: left=%d right=%d", lay.hiddenLeft, lay.hiddenRight)
+	}
+}
+
+func TestOffscreenLaneBundleMarks(t *testing.T) {
+	var s Scene
+	for i := 0; i < 40; i++ {
+		s.Lanes = append(s.Lanes, fmt.Sprintf("lane-%02d", i))
+	}
+	width := 60
+	g := Frame(s, 0, width, 20)
+	if got := g[2][width-1]; got != (Cell{'»', Faded}) {
+		t.Fatalf("right bundle mark missing: %q", got)
+	}
+	if got := g[2][0]; got.Rune == '«' {
+		t.Fatalf("unexpected left bundle mark: %q", got)
+	}
+	s.FirstLane = 10
+	g = Frame(s, 0, width, 20)
+	if got := g[2][0]; got != (Cell{'«', Faded}) {
+		t.Fatalf("left bundle mark missing: %q", got)
+	}
+	if got := g[2][width-1]; got != (Cell{'»', Faded}) {
+		t.Fatalf("right bundle mark missing while scrolled: %q", got)
+	}
+	// When every lane fits, neither edge claims a lane it cannot show.
+	g = Frame(s, 0, 60*40, 20)
+	for x := range g[2] {
+		if g[2][x].Rune == '«' || g[2][x].Rune == '»' {
+			t.Fatalf("bundle mark drawn with no hidden lanes at x=%d", x)
+		}
+	}
+}
+
 func TestLaneLayoutStaysUniformBelowScale(t *testing.T) {
 	var s Scene
 	for i := 0; i < 3; i++ {
