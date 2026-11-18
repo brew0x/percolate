@@ -58,13 +58,15 @@ callers with push access are filtered before the cap check: a draft was never
 published, so it must not draw a release mark or enter release details, and it
 must not consume the release budget.
 
-Not read in this slice: per-run job lists and per-deployment statuses (both
-are unbounded per-object fan-outs; run details and deployment state stay
-empty rather than guessed). Workflow-run jobs are recorded only when a
-snapshot was made by a source that included them; run details then say
-`jobs not recorded` rather than a numeric zero. A snapshot that does carry
-jobs renders one mark per job beside the run, and run details name the
-failing jobs.
+Not read in this slice: release artifact names, per-run job lists and
+per-deployment statuses (the latter two are unbounded per-object fan-outs;
+run details and deployment state stay empty rather than guessed). Artifacts,
+jobs and deployment state are recorded only when a snapshot was made by a
+source that included them; a release with none says `artifacts not recorded`
+and a run with none says `jobs not recorded` rather than a numeric zero. A
+snapshot that does carry them renders artifacts above their release and one
+mark per job beside its run, colours each deployment's flow by its recorded
+state, and names failing jobs in run details.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
 local servers; also the seam for a future GitHub Enterprise host). It must be

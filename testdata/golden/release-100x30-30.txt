@@ -1,0 +1,30 @@
+  PERCOLATE  1–3/3                                                                                  
+                                                                                                    
+   main                            flow-1                          flow-2                           
+                                                                                                    
+   ●                                                                                                
+   │                                                                                                
+   │                                                               ●                                
+   │                                                               │                                
+   │                               ●                               │                                
+   │                               │                               │                                
+   │                               │                               │                                
+   ●                               │                               │                                
+   │                               │                               │                                
+   │                               │                               ●                                
+   │                               │                                                                
+   │                               ●                                                                
+   │                                                                                                
+   │                                                                                                
+   ●                                                                                                
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+   ▤ checksums.txt                                                                                  
+   ▤ dist.tar.gz                   ▤ lib.zip                                                        
+   ◆ v1.0 ─▣prod ─▣staging ─▣dev   ◆ v0.9 ─▣preview                ▣ canary                         
+                                                                                                    
