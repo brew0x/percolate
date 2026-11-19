@@ -18,3 +18,8 @@ repository secret named `HOMEBREW_TAP_GITHUB_TOKEN` holding a token with write
 access to the tap; the release job's `GITHUB_TOKEN` only covers this repository.
 Pull requests run the same release config as a snapshot with publishing skipped,
 so no secret is available or needed there.
+
+Update `RELEASE_NOTES.md` before tagging. The tag job passes it with
+`--release-notes`, so the published text is written by hand rather than derived
+from commit subjects; the PR dry-run still generates a changelog. Keep the file
+about the release being tagged, and keep tokens and other secrets out of it.

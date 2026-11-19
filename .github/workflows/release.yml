@@ -42,7 +42,9 @@ jobs:
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: v2.20.0
-          args: release --clean
+          # Tagged releases carry the handwritten notes in brew0x's voice.
+          # The PR dry-run above keeps GoReleaser's generated changelog.
+          args: release --clean --release-notes=RELEASE_NOTES.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

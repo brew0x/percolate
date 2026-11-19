@@ -63,7 +63,7 @@ extract `percolate.exe` and put it on your `PATH`.
 
 Each `vX.Y.Z` tag attaches macOS, Linux and Windows archives to the GitHub
 release and updates the Homebrew tap; `percolate version` reports the tagged
-version.
+version. The text of a release is handwritten in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ## Usage
 
