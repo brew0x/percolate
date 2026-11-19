@@ -40,11 +40,25 @@ recorded to a file and replayed identically.
 
 ## Install
 
-Go 1.27 or later:
+Homebrew (macOS or Linux):
+
+```sh
+brew install brew0x/tap/percolate
+```
+
+Or with Go 1.27 or later:
 
 ```sh
 go install github.com/brew0x/percolate/cmd/percolate@latest
 ```
+
+On Windows, download the `.zip` archive for your CPU (`amd64` or `arm64`) from
+the latest [GitHub release](https://github.com/brew0x/percolate/releases),
+extract `percolate.exe` and put it on your `PATH`.
+
+Each `vX.Y.Z` tag attaches macOS, Linux and Windows archives to the GitHub
+release and updates the Homebrew tap; `percolate version` reports the tagged
+version.
 
 ## Usage
 

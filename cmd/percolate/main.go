@@ -19,7 +19,8 @@ import (
 	"strings"
 )
 
-const version = "0.1.0"
+// var, not const, so GoReleaser can set the tagged version with -ldflags.
+var version = "0.1.0"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 func run(args []string, out, errout io.Writer) int {

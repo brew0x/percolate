@@ -1,0 +1,57 @@
+# Pushing a vX.Y.Z tag runs .github/workflows/release.yml: these archives go to
+# a GitHub release and a Homebrew cask is pushed to brew0x/homebrew-tap.
+version: 2
+project_name: percolate
+
+builds:
+  - id: percolate
+    main: ./cmd/percolate
+    binary: percolate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - "-s -w -X main.version={{ .Version }}"
+
+archives:
+  - id: percolate
+    ids: [percolate]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+# A cask in the tap keeps `brew install brew0x/tap/percolate` working. The
+# formula key (`brews`) is deprecated in GoReleaser v2.10; casks are its
+# supported replacement and a `binary` cask works on macOS and Linux.
+homebrew_casks:
+  - name: percolate
+    binaries:
+      - percolate
+    repository:
+      owner: brew0x
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/brew0x/percolate"
+    description: "A living landscape of a repository's development lifecycle, inside your terminal"
