@@ -40,11 +40,21 @@ recorded to a file and replayed identically.
 
 ## Install
 
-Go 1.27 or later:
+Homebrew (macOS or Linux):
+
+```sh
+brew install brew0x/tap/percolate
+```
+
+Or with Go 1.27 or later:
 
 ```sh
 go install github.com/brew0x/percolate/cmd/percolate@latest
 ```
+
+Each `vX.Y.Z` tag also attaches macOS, Linux and Windows archives to a
+[GitHub release](https://github.com/brew0x/percolate/releases);
+`percolate version` reports the tagged version.
 
 ## Usage
 
