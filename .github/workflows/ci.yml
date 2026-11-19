@@ -14,9 +14,14 @@ jobs:
       # Frame cost is also asserted as a 5 ms budget inside make check; this
       # step prints the measured busy and 500-PR frame numbers in the log.
       - run: go test ./internal/scene -run '^$' -bench 'BenchmarkBusyFrame|BenchmarkScaleFrame' -benchtime=200x -benchmem
-      - name: Demo recording up to date
+      - name: Demo recording reproducible
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig
           make demo
-          git diff --exit-code -- demo/percolate.gif demo/demo.tape demo/generate.sh
+          # make check proves the recorded frames match the fixture; rerun the
+          # demo checks on the GIF this job just encoded before checking drift.
+          go test ./cmd/percolate -run '^TestDemo' -count=1
+          # Encoder and font builds change GIF bytes without changing the
+          # replay, so the frame manifest is the reproducible artifact.
+          git diff --exit-code -- demo/demo.tape demo/generate.sh demo/frames.sha256

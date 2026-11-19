@@ -2,6 +2,9 @@
 
 ![Percolate replaying a recorded fixture](demo/percolate.gif)
 
+The recording replays `testdata/fixtures/small.json` frame by frame. `make demo`
+regenerates it; `make check` verifies its recorded frames against the fixture.
+
 A living landscape of a repository's development lifecycle, inside your terminal.
 Branches flow downward; commits, reviews and CI meet on the way to releases.
 `percolate owner/repo` fetches a live snapshot from GitHub; any snapshot can be
