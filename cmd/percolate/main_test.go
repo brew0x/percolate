@@ -59,6 +59,29 @@ func TestCLI(t *testing.T) {
 	}
 }
 
+// The documented go-install route must report the version that was installed,
+// not the source fallback: `go install ...@latest` injects no ldflags, so the
+// tagged version comes from the build info Go records in the binary. A
+// GoReleaser -ldflags tag still wins over build info.
+func TestReleaseVersion(t *testing.T) {
+	for _, tt := range []struct {
+		name, injected, module, want string
+	}{
+		{"local build", fallbackVersion, "(devel)", fallbackVersion},
+		{"no build info", fallbackVersion, "", fallbackVersion},
+		{"tagged archive", "0.2.0", "(devel)", "0.2.0"},
+		{"go install at a tag", fallbackVersion, "v0.2.0", "0.2.0"},
+		{"go install at a pseudo-version", fallbackVersion, "v0.2.1-0.20261119-abcdef", "0.2.1-0.20261119-abcdef"},
+		{"injected tag wins", "0.2.0", "v9.9.9", "0.2.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := releaseVersion(tt.injected, tt.module); got != tt.want {
+				t.Fatalf("releaseVersion(%q, %q) = %q, want %q", tt.injected, tt.module, got, tt.want)
+			}
+		})
+	}
+}
+
 // The first picture in the README is a still of the bundled small fixture. It
 // must be a frame Percolate actually draws, not an old picture left behind by a
 // renderer change: a release's storefront is held to the same golden proof as

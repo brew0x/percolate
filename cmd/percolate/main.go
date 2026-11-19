@@ -15,17 +15,45 @@ import (
 	"image/color"
 	"io"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
 
+// fallbackVersion is what a plain local build reports. Releases override it
+// with the tag through -ldflags; go-installed builds have no ldflags, so
+// installedVersion reads the module version Go records in the binary instead.
+const fallbackVersion = "0.1.0"
+
 // var, not const, so GoReleaser can set the tagged version with -ldflags.
-var version = "0.1.0"
+var version = fallbackVersion
+
+// releaseVersion resolves what `percolate version` prints. An injected release
+// tag wins; otherwise a real module version (go install owner/repo/cmd@latest)
+// beats the source fallback, so the documented install route reports the
+// version that was actually installed rather than a stale source constant.
+func releaseVersion(injected, module string) string {
+	if injected != "" && injected != fallbackVersion {
+		return injected
+	}
+	if module != "" && module != "(devel)" {
+		return strings.TrimPrefix(module, "v")
+	}
+	return fallbackVersion
+}
+
+func installedVersion() string {
+	module := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		module = info.Main.Version
+	}
+	return releaseVersion(version, module)
+}
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 func run(args []string, out, errout io.Writer) int {
 	if len(args) > 0 && args[0] == "version" {
-		fmt.Fprintln(out, "percolate "+version)
+		fmt.Fprintln(out, "percolate "+installedVersion())
 		return 0
 	}
 	render := len(args) > 0 && args[0] == "render"
