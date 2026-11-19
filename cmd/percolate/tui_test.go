@@ -307,6 +307,62 @@ func TestMouseSelectsTheDrawnDeployment(t *testing.T) {
 	}
 }
 
+// Two deployments to one environment share a release row and an identical
+// label. A click must name the specific recorded deployment drawn in that cell
+// and `o` must open its own object, not the other deployment's URL.
+func TestMouseOpensEachDeploymentInSharedRow(t *testing.T) {
+	const sha = "abcabcabcabcabcabcabcabcabcabcabcabcabca"
+	snap := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha, Branch: "main"}},
+		Releases: []repo.Release{{Tag: "v1", HeadSHA: sha}},
+		Deployments: []repo.Deployment{
+			{ID: 10, Environment: "prod", HeadSHA: sha, State: "success"},
+			{ID: 11, Environment: "prod", HeadSHA: sha, State: "failure"},
+		},
+	}
+	m := uiModel(snap)
+	s, frame := m.viewScene()
+	g := scene.Frame(s, frame, m.width, m.height-m.reserve())
+
+	type target struct{ id, url string }
+	var targets []target
+	for y, row := range g {
+		for x, cell := range row {
+			if cell.Rune != '▣' {
+				continue
+			}
+			id := m.markAt(x, y)
+			if !strings.HasPrefix(id, "deployment:") {
+				t.Fatalf("deployment cell %d,%d named %q", x, y, id)
+			}
+			next, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			clicked := next.(model)
+			if got := clicked.selectionID(); got != id {
+				t.Fatalf("click at %d,%d selected %q, want %q", x, y, got, id)
+			}
+			targets = append(targets, target{id: id, url: markURL(clicked, markByID(t, clicked, id))})
+		}
+	}
+	if len(targets) != 2 {
+		t.Fatalf("shared release row drew %d deployments, want 2: %v", len(targets), targets)
+	}
+	if targets[0].id == targets[1].id || targets[0].url == targets[1].url {
+		t.Fatalf("same-environment deployments were not distinguished: %v", targets)
+	}
+	for _, want := range []string{"/deployments/10", "/deployments/11"} {
+		found := false
+		for _, tg := range targets {
+			if strings.HasSuffix(tg.url, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no clicked deployment opened %q: %v", want, targets)
+		}
+	}
+}
+
 // The detail panel is text a reviewer can read without a terminal: these two
 // frames are the checked-in proof of what an open panel says on screen.
 func TestTUIDetailGolden(t *testing.T) {
