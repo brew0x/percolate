@@ -104,10 +104,10 @@ func TestDetailPanelReplayHasNoURL(t *testing.T) {
 }
 
 // Repository-controlled text cannot add rows or terminal instructions to the
-// panel. Newlines, escapes and bidi controls are replaced before measurement,
-// so every field still occupies exactly one measured line.
+// panel. Newlines, escapes, C1 and bidi controls are replaced before
+// measurement, so every field still occupies exactly one measured line.
 func TestDetailPanelSanitizesRepositoryText(t *testing.T) {
-	hostile := "safe\r\n  github     https://evil.example\x1b[31m\u202e"
+	hostile := "safe\r\n  github     https://evil.example\x1b[31m\u202e\u009f"
 	snap := repo.Snapshot{Issues: []repo.Issue{{Number: 5, Title: hostile, State: "open"}}}
 	m := uiModel(snap)
 	lines := detailLines(m, markByID(t, m, "issue:5"))
@@ -121,7 +121,7 @@ func TestDetailPanelSanitizesRepositoryText(t *testing.T) {
 		if !strings.HasPrefix(line, "  ") {
 			t.Fatalf("line %d was spoofed into a panel row: %q", i+1, line)
 		}
-		if strings.ContainsAny(line, "\r\x1b\u202e") {
+		if strings.ContainsAny(line, "\r\x1b\u202e\u009f") {
 			t.Fatalf("control character survived in line %d: %q", i+1, line)
 		}
 	}
@@ -185,6 +185,9 @@ func TestBrowserCommandAndOpenKey(t *testing.T) {
 	}
 	if openBrowserCmd("https://github.com/acme/widgets\u00a0open calc") != nil {
 		t.Fatal("a URL with Unicode whitespace was offered to the browser")
+	}
+	if openBrowserCmd("https://github.com/acme/widgets\u009fcalc") != nil {
+		t.Fatal("a URL with a C1 control was offered to the browser")
 	}
 	if openBrowserCmd("https://user:pass@github.com/acme/widgets") != nil {
 		t.Fatal("a URL with credentials was offered to the browser")
