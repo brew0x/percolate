@@ -145,6 +145,9 @@ func (m model) footer() []string {
 	if m.refreshFailed {
 		key = "refresh failed; retrying  ·  " + key
 	}
+	// The hints and status share the last row; fit them once so a notice or a
+	// narrow window cannot wrap them into a row the height budget does not have.
+	key = fit(clean(key), m.width)
 	if !m.details {
 		return []string{key}
 	}
@@ -557,20 +560,31 @@ func clean(s string) string {
 	return b.String()
 }
 
-// fit truncates a panel line to the terminal width, so a long SHA or URL
-// cannot wrap into the key hints below it.
+// fit truncates a panel line to the terminal's display width, so a long URL or
+// a wide CJK/emoji glyph cannot wrap into the key hints below it. Lip gloss
+// wraps by terminal cells, not runes: measuring in runes would let one wide
+// character push a row into the next and hide the URL or the controls.
 func fit(s string, width int) string {
-	r := []rune(s)
 	if width < 1 {
 		return ""
 	}
-	if len(r) <= width {
+	if lipgloss.Width(s) <= width {
 		return s
 	}
 	if width == 1 {
 		return "…"
 	}
-	return string(r[:width-1]) + "…"
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := lipgloss.Width(string(r))
+		if used+w > width-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + "…"
 }
 
 // detailLines is the panel text: the object's recorded fields followed by its
@@ -593,7 +607,7 @@ func detailLines(m model, mark scene.Mark) []string {
 	} else {
 		lines = append(lines, "  github     no URL: replay has no repository")
 	}
-	width := max(12, m.width-2)
+	width := max(1, m.width-2)
 	for i, line := range lines {
 		lines[i] = fit(line, width)
 	}
@@ -630,7 +644,10 @@ func openBrowserCmd(rawURL string) tea.Cmd {
 	}
 	// Only a plain web URL is ever handed to a launcher. Whitespace, control
 	// characters and credentials have no place in one of our recorded links.
-	if strings.IndexFunc(rawURL, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+	// Unicode whitespace and C1 controls are rejected too, not just ASCII ones.
+	if strings.IndexFunc(rawURL, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
 		return nil
 	}
 	u, err := url.Parse(rawURL)

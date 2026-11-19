@@ -186,7 +186,9 @@ func short(s string) string {
 // Owners names the mark that drew each rendered cell. Paths, labels written by
 // the header and other decoration carry no owner. It is built in the same pass
 // as the visible frame, so input can hit-test what is actually on screen
-// instead of guessing from a glyph that repeats across lanes and rows.
+// instead of guessing from a glyph that repeats across lanes and rows. Drawing
+// a new glyph clears the previous owner first, so a cell repainted by an
+// unowned path never keeps naming a mark that has been covered or removed.
 type Owners [][]string
 
 // Frame uses no time, I/O, randomness, or terminal state. Path cells show the
@@ -220,6 +222,13 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	put := func(x, y int, r rune, style Style) {
 		if y >= 0 && y < height && x >= 0 && x < width {
 			g[y][x] = Cell{r, style}
+			// Every repaint drops the previous owner. Callers that draw an
+			// inspectable mark set it again with own immediately afterwards;
+			// paths, arrows and other unowned glyphs leave no identity behind.
+			// Without this, a surviving flow painted over a departing mark
+			// would keep naming a mark no longer drawn at that cell, so a
+			// click could select an object that is not there.
+			owners[y][x] = ""
 		}
 	}
 	label := func(x, y int, t string, limit int, style Style) {

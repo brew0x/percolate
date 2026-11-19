@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
@@ -181,6 +182,9 @@ func TestBrowserCommandAndOpenKey(t *testing.T) {
 	}
 	if openBrowserCmd("https://github.com/acme/widgets\nopen calc") != nil {
 		t.Fatal("a URL with a control character was offered to the browser")
+	}
+	if openBrowserCmd("https://github.com/acme/widgets\u00a0open calc") != nil {
+		t.Fatal("a URL with Unicode whitespace was offered to the browser")
 	}
 
 	// No shell may parse a URL derived from repository data. The Windows
@@ -466,5 +470,32 @@ func TestTUIViewGolden(t *testing.T) {
 		if got != string(want) {
 			t.Fatalf("rendered view differs from %s:\n got:\n%s\nwant:\n%s", path, got, want)
 		}
+	}
+}
+
+// Lip gloss wraps by display cells, not runes. A wide repository title and a
+// status notice must still fit the terminal, or a wrapped row hides the URL or
+// the controls below the visible area even though the line count is bounded.
+func TestFooterFitsDisplayWidth(t *testing.T) {
+	snap := repo.Snapshot{Issues: []repo.Issue{{
+		Number: 5, Title: strings.Repeat("問題", 40), State: "open",
+	}}}
+	m := uiModel(snap)
+	m.width, m.height = 60, 10
+	m.details = true
+	m.selectID("issue:5")
+	m.notice = "opened in browser"
+
+	for i, line := range m.footer() {
+		if w := lipgloss.Width(line); w > m.width {
+			t.Fatalf("footer line %d is %d cells for %d columns: %q", i, w, m.width, line)
+		}
+	}
+	view := plainView(m)
+	if lines := strings.Count(view, "\n") + 1; lines > m.height {
+		t.Fatalf("wide footer has %d lines for %d rows:\n%s", lines, m.height, view)
+	}
+	if !strings.Contains(view, "https://github.com/acme/widgets/issues/5") {
+		t.Fatalf("wide title pushed the URL out of view:\n%s", view)
 	}
 }
