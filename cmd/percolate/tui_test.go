@@ -186,6 +186,12 @@ func TestBrowserCommandAndOpenKey(t *testing.T) {
 	if openBrowserCmd("https://github.com/acme/widgets\u00a0open calc") != nil {
 		t.Fatal("a URL with Unicode whitespace was offered to the browser")
 	}
+	if openBrowserCmd("https://user:pass@github.com/acme/widgets") != nil {
+		t.Fatal("a URL with credentials was offered to the browser")
+	}
+	if openBrowserCmd("ftp://github.com/acme/widgets") != nil {
+		t.Fatal("a non-web scheme was offered to the browser")
+	}
 
 	// No shell may parse a URL derived from repository data. The Windows
 	// launcher calls the URL handler directly rather than cmd /c start.
@@ -413,6 +419,47 @@ func TestMouseHitTestsScrolledViewport(t *testing.T) {
 	}
 	if diamonds == 0 {
 		t.Fatal("no PR diamond in the scrolled viewport")
+	}
+}
+
+// Overlapping marks answer to the one View draws last. Applying the highlight
+// before both the frame and the hit test keeps a click on a shared cell from
+// naming whichever mark happened to be earlier in the snapshot.
+func TestMouseHitTestsOverlapWithSelection(t *testing.T) {
+	m := uiModel(repo.Snapshot{})
+	m.s = scene.Scene{
+		Lanes: []string{"main"},
+		Marks: []scene.Mark{
+			{ID: "pr:1", Kind: "pr", Label: "#1", Lane: 0, Base: 0, Glyph: '◇', Style: scene.Fresh},
+			{ID: "pr:2", Kind: "pr", Label: "#2", Lane: 0, Base: 0, Glyph: '◇', Style: scene.Fresh},
+		},
+	}
+	for _, want := range []string{"pr:1", "pr:2"} {
+		m.selectID(want)
+		s, frame := m.viewScene()
+		g := scene.Frame(s, frame, m.width, m.height-m.reserve())
+		x, y, found := -1, -1, false
+		for rowIndex, row := range g {
+			for col, cell := range row {
+				if cell.Rune == '◇' {
+					x, y, found = col, rowIndex, true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			t.Fatal("no diamond drawn for the overlapping pull requests")
+		}
+		if got := m.markAt(x, y); got != want {
+			t.Fatalf("overlap cell named %q, want the selected %q", got, want)
+		}
+		next, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if got := next.(model).selectionID(); got != want {
+			t.Fatalf("click on overlap selected %q, want %q", got, want)
+		}
 	}
 }
 
