@@ -472,6 +472,45 @@ var sgrPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // the colour codes so a reviewer can read the golden as text.
 func plainView(m model) string { return sgrPattern.ReplaceAllString(m.View().Content, "") }
 
+// Hit testing must name the object drawn in the frame View actually paints.
+// Walking every owned cell of that same frame catches a viewport, selection or
+// repaint disagreement that a glyph-only scan would miss.
+func TestMouseHitTargetsMatchRenderedView(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/small.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	m := uiModel(snap)
+	m.details = true
+	m.selectID("pr:" + fmt.Sprint(snap.PullRequests[0].Number))
+
+	s, frame := m.viewScene()
+	_, owners := scene.FrameWithOwners(s, frame, m.width, m.height-m.reserve())
+	rows := strings.Split(plainView(m), "\n")
+	checked := 0
+	for y, row := range owners {
+		if y >= len(rows) {
+			break
+		}
+		for x, want := range row {
+			if want == "" {
+				continue
+			}
+			if got := m.markAt(x, y); got != want {
+				t.Fatalf("rendered cell %d,%d names %q but a click resolves to %q", x, y, want, got)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("the rendered view had no owned cells to hit-test")
+	}
+}
+
 // These goldens capture the whole rendered view, not detailLines alone, at a
 // normal and a short terminal. They prove the URL and controls stay visible.
 func TestTUIViewGolden(t *testing.T) {
