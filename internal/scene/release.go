@@ -86,6 +86,7 @@ type releaseView struct {
 type releaseCell struct {
 	rune  rune
 	style Style
+	owner string
 }
 
 // drawReleases paints the bottom band: releases with their artifacts, then the
@@ -93,11 +94,12 @@ type releaseCell struct {
 // before the issue layer, so a PR flow cannot be crossed out and an issue feed
 // only fills what is free. Fading marks draw first, settled ones next and the
 // selected object last, matching the rest of the frame.
-func drawReleases(g Grid, s Scene, v releaseView) {
+func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 	row := v.height - 2
 	put := func(x, y int, c releaseCell) {
 		if x >= 0 && x < v.width && y >= 0 && y < v.height {
 			g[y][x] = Cell{c.rune, c.style}
+			own(x, y, c.owner)
 		}
 	}
 	empty := func(x, y int) bool {
@@ -149,19 +151,19 @@ func drawReleases(g Grid, s Scene, v releaseView) {
 		deps := linked[m.ID]
 		limit := max(0, v.widthOf(m.Lane)-1)
 		build := func(withNames bool) []releaseCell {
-			cs := []releaseCell{{m.Glyph, style}, {' ', style}}
+			cs := []releaseCell{{m.Glyph, style, m.ID}, {' ', style, ""}}
 			for _, r := range m.Label {
-				cs = append(cs, releaseCell{r, style})
+				cs = append(cs, releaseCell{r, style, m.ID})
 			}
 			for _, d := range deps {
 				ds := d.Style
 				if d.ID == s.SelectedID {
 					ds = Selected
 				}
-				cs = append(cs, releaseCell{' ', ds}, releaseCell{'─', ds}, releaseCell{d.Glyph, ds})
+				cs = append(cs, releaseCell{' ', ds, ""}, releaseCell{'─', ds, d.ID}, releaseCell{d.Glyph, ds, d.ID})
 				if withNames {
 					for _, r := range d.Label {
-						cs = append(cs, releaseCell{r, ds})
+						cs = append(cs, releaseCell{r, ds, d.ID})
 					}
 				}
 			}
@@ -194,7 +196,7 @@ func drawReleases(g Grid, s Scene, v releaseView) {
 					break
 				}
 			}
-			put(x, row+1, releaseCell{'!', mark})
+			put(x, row+1, releaseCell{'!', mark, ""})
 		}
 	}
 
@@ -218,12 +220,12 @@ func drawReleases(g Grid, s Scene, v releaseView) {
 			if y <= v.bottom || y < 0 {
 				break
 			}
-			run := []releaseCell{{'▤', style}, {' ', style}}
+			run := []releaseCell{{'▤', style, m.ID}, {' ', style, ""}}
 			for _, r := range []rune(name) {
 				if len(run) >= limit {
 					break
 				}
-				run = append(run, releaseCell{r, style})
+				run = append(run, releaseCell{r, style, m.ID})
 			}
 			free := true
 			for j := range run {
@@ -256,10 +258,10 @@ func drawReleases(g Grid, s Scene, v releaseView) {
 		if reserved[[2]int{x, row}] {
 			return
 		}
-		put(x, row, releaseCell{d.Glyph, style})
+		put(x, row, releaseCell{d.Glyph, style, d.ID})
 		reserved[[2]int{x, row}] = true
 		if !reserved[[2]int{x + 1, row}] {
-			put(x+1, row, releaseCell{' ', style})
+			put(x+1, row, releaseCell{' ', style, ""})
 			reserved[[2]int{x + 1, row}] = true
 		}
 		limit := max(0, v.widthOf(d.Lane)-3)
@@ -267,7 +269,7 @@ func drawReleases(g Grid, s Scene, v releaseView) {
 			if i >= limit || reserved[[2]int{x + 2 + i, row}] {
 				break
 			}
-			put(x+2+i, row, releaseCell{r, style})
+			put(x+2+i, row, releaseCell{r, style, d.ID})
 			reserved[[2]int{x + 2 + i, row}] = true
 		}
 	}

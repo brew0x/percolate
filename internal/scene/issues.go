@@ -86,7 +86,7 @@ type issueView struct {
 // requests that are departing — present in the previous snapshot only — answer
 // only their own fading issues; a departed PR must never satisfy the lookup
 // for a surviving issue that moved into its rank.
-func drawIssues(g Grid, s Scene, v issueView) {
+func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 	prByRank := make(map[int]Mark, len(s.Marks))
 	departedByRank := make(map[int]Mark)
 	for _, m := range s.Marks {
@@ -112,6 +112,7 @@ func drawIssues(g Grid, s Scene, v issueView) {
 			return false
 		}
 		g[y][x] = Cell{r, style}
+		own(x, y, "") // a space or a replacement erases the previous owner
 		written[key] = true
 		return true
 	}
@@ -125,7 +126,9 @@ func drawIssues(g Grid, s Scene, v issueView) {
 			if m.ID == s.SelectedID {
 				y = min(y, v.height-1)
 			}
-			put(0, y, issueSpring, style)
+			if put(0, y, issueSpring, style) {
+				own(0, y, m.ID)
+			}
 			return
 		}
 		if !v.visible(m.Lane) {
@@ -155,6 +158,7 @@ func drawIssues(g Grid, s Scene, v issueView) {
 			// draws nothing around it; it reappears whole once the cell frees.
 			return
 		}
+		own(x, y, m.ID)
 		if labelWidth := v.widthOf(m.Lane) - 2; labelWidth >= 3 {
 			// Clear the label field the layer owns before writing. Several
 			// issues may link to the same head lane; a short label drawn over
@@ -171,6 +175,7 @@ func drawIssues(g Grid, s Scene, v issueView) {
 				if !put(x+1+i, y, r, style) {
 					break
 				}
+				own(x+1+i, y, m.ID)
 			}
 		}
 		if !ok {
@@ -179,6 +184,7 @@ func drawIssues(g Grid, s Scene, v issueView) {
 		for yy := v.top; yy < prRow && yy < v.height; yy++ {
 			if g[yy][x].Rune == ' ' {
 				g[yy][x] = Cell{issueFeed, LaneStyle}
+				own(x, yy, m.ID)
 				written[[2]int{x, yy}] = true
 			}
 		}
