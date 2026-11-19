@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/repo"
@@ -89,20 +90,34 @@ func (m *model) moveSelection(delta int) {
 // selectID points the cursor at an identity already in the drawn scene, so a
 // mouse click or hover selects exactly the mark under the terminal cell.
 func (m *model) selectID(id string) {
-	s, _ := m.viewScene()
-	if i := markIndex(s, id); i >= 0 {
+	if i := markIndex(m.s, id); i >= 0 {
 		m.selected, m.selectedID = i, id
+		return
+	}
+	// A departing mark exists only in the transition scene, not in m.s; its
+	// identity is still enough to keep it selected while it fades.
+	if s, _ := m.viewScene(); markIndex(s, id) >= 0 {
+		m.selectedID = id
 	}
 }
 
-// viewScene is the scene actually on screen at this frame. View, mouse hit
-// testing and the detail panel all use it, so they cannot disagree about which
-// object a cell or a selection names.
+// viewScene is the scene actually on screen at this frame: the transition
+// scene, the selection highlight and the viewport that keeps the selected mark
+// visible. View, mouse hit testing and the detail panel all use it, so they
+// cannot disagree about which object a cell or a selection names.
 func (m model) viewScene() (scene.Scene, int) {
 	s, frame := m.s, m.frame
 	if m.transiting {
 		frame = max(0, m.frame-m.transitionStart)
 		s = scene.Transition(m.prev, m.cur, frame)
+	}
+	_, mark, ok := m.selectedMark(s)
+	if ok {
+		s.SelectedID = mark.ID
+		count := scene.VisibleLanes(m.width)
+		if mark.Lane < s.FirstLane || mark.Lane >= s.FirstLane+count {
+			s.FirstLane = mark.Lane
+		}
 	}
 	return s, frame
 }
@@ -118,15 +133,52 @@ func (m model) selectedMark(s scene.Scene) (int, scene.Mark, bool) {
 	return selected, s.Marks[selected], true
 }
 
-// reserve is the footer height. The detail panel is a block of recorded fields
-// above the key hints; the extra rows come out of the landscape, never out of
-// a separate renderer that could disagree with the frame.
-func (m model) reserve() int {
-	if m.details {
-		return 10
+// footer is the exact text below the landscape. It keeps the key hints last
+// and trims detail rows from the top when the terminal is short, so neither
+// the URL nor the controls fall below the visible area. The landscape gets
+// every remaining row; no other renderer can disagree with it.
+func (m model) footer() []string {
+	key := "tab / arrows / mouse  ·  enter details  ·  o browser  ·  q"
+	if m.notice != "" {
+		key = m.notice + "  ·  " + key
 	}
-	return 1
+	if m.refreshFailed {
+		key = "refresh failed; retrying  ·  " + key
+	}
+	if !m.details {
+		return []string{key}
+	}
+	s, _ := m.viewScene()
+	_, mark, ok := m.selectedMark(s)
+	if !ok {
+		return []string{key}
+	}
+	detail := detailLines(m, mark)
+	lines := append(append([]string{}, detail...), "", key)
+	budget := max(1, m.height)
+	if len(lines) <= budget {
+		return lines
+	}
+	// Drop the blank separator, then fields from the top and finally the
+	// header. The URL and the key hints survive whenever there is room.
+	lines = append(lines[:len(detail)], key)
+	urlAt := len(detail) - 1
+	for len(lines) > budget && urlAt > 1 {
+		lines = append(lines[:1], lines[2:]...)
+		urlAt--
+	}
+	for len(lines) > budget && urlAt > 0 {
+		lines = lines[1:]
+		urlAt--
+	}
+	if len(lines) > budget {
+		lines = lines[len(lines)-budget:]
+	}
+	return lines
 }
+
+// reserve is the footer height, bounded by the terminal so the whole view fits.
+func (m model) reserve() int { return len(m.footer()) }
 
 func (m model) Init() tea.Cmd {
 	if m.fetch != nil {
@@ -246,23 +298,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// glyphMatches reports whether a drawn rune could be this mark. A running run
-// cycles through pulse glyphs and a job strip uses outcome glyphs, so any of
-// them still names that run.
-func glyphMatches(mark scene.Mark, r rune) bool {
-	if r == mark.Glyph {
-		return true
-	}
-	if mark.Kind != "run" {
-		return false
-	}
-	switch r {
-	case '✓', '✕', '−', '◌', '◔', '◑', '◕':
-		return true
-	}
-	return false
-}
-
 func absInt(n int) int {
 	if n < 0 {
 		return -n
@@ -270,99 +305,11 @@ func absInt(n int) int {
 	return n
 }
 
-// rowMatches uses the same rank-to-row rule as the renderer for marks that
-// share a glyph. Without it every commit bead would name every other commit:
-// the glyph is the same, only the recorded rank places it on a row.
-func (m model) rowMatches(mark scene.Mark, y int) bool {
-	if mark.Kind != "commit" && mark.Kind != "run" {
-		return true
-	}
-	height := max(0, m.height-m.reserve())
-	bottom := max(4, height*3/5)
-	row := 4
-	if mark.Total > 1 {
-		row += mark.Rank * (bottom - 4) / (mark.Total - 1)
-	}
-	row = max(3, row-mark.Drip)
-	return absInt(row-y) <= 2
-}
-
-// bandAt disambiguates the release band, where one glyph stands for each
-// release or deployment in a row. Their number and left-to-right order come
-// from the same scene the frame drew, so a click names the drawn object.
-func bandAt(s scene.Scene, g scene.Grid, x, y int, r rune) string {
-	if y >= len(g) {
-		return ""
-	}
-	var releaseX []int
-	for xx, c := range g[y] {
-		if c.Rune == '◆' {
-			releaseX = append(releaseX, xx)
-		}
-	}
-	var releases []string
-	for _, mark := range s.Marks {
-		if mark.Kind == "release" {
-			releases = append(releases, mark.ID)
-		}
-	}
-	groupOf := func(cellX int) int {
-		group := -1
-		for _, rx := range releaseX {
-			if rx < cellX {
-				group++
-			}
-		}
-		return group
-	}
-	if r == '◆' {
-		for i, rx := range releaseX {
-			if rx == x && i < len(releases) {
-				return releases[i]
-			}
-		}
-		return ""
-	}
-	group := groupOf(x)
-	index := 0
-	for xx, c := range g[y] {
-		if xx >= x {
-			break
-		}
-		if c.Rune == '▣' && groupOf(xx) == group {
-			index++
-		}
-	}
-	var grouped, standalone []string
-	for _, mark := range s.Marks {
-		if mark.Kind != "deployment" {
-			continue
-		}
-		if mark.ReleaseTag == "" {
-			standalone = append(standalone, mark.ID)
-		} else if group >= 0 && group < len(releases) &&
-			mark.ReleaseTag == strings.TrimPrefix(releases[group], "release:") {
-			grouped = append(grouped, mark.ID)
-		}
-	}
-	deployments := grouped
-	if group < 0 {
-		deployments = standalone
-	} else if index >= len(grouped) {
-		// Standalone deployments are drawn past the last release's branches.
-		index -= len(grouped)
-		deployments = standalone
-	}
-	if index >= 0 && index < len(deployments) {
-		return deployments[index]
-	}
-	return ""
-}
-
-// markAt returns the identity drawn at or near a terminal cell. It reads the
-// same frame View draws, so a click chooses what the person can actually see.
-// The exact cell wins: when marks overlap, its rune belongs to the one drawn
-// last. A small radius makes tiny glyphs clickable without inventing a mark.
+// markAt returns the identity drawn at or near a terminal cell. The scene
+// reports the owner of each cell in the very frame View draws, using the same
+// viewport and selection, so a repeated glyph in another lane or an offscreen
+// lane cannot answer for this one. The exact cell wins; a small radius forgives
+// tiny glyphs without inventing a mark on empty space far from any drawing.
 func (m model) markAt(x, y int) string {
 	if x < 0 || y < 0 {
 		return ""
@@ -372,41 +319,31 @@ func (m model) markAt(x, y int) string {
 	if m.width < 5 || height < 7 {
 		return "" // the renderer only draws the title in a tiny frame
 	}
-	g := scene.Frame(s, frame, m.width, height)
-	if y >= len(g) || x >= len(g[y]) {
+	_, owners := scene.FrameWithOwners(s, frame, m.width, height)
+	if y >= len(owners) || x >= len(owners[y]) {
 		return ""
 	}
-	if r := g[y][x].Rune; r != ' ' {
-		if r == '◆' || r == '▣' {
-			if id := bandAt(s, g, x, y, r); id != "" {
-				return id
-			}
-		}
-		for _, mark := range s.Marks { // later marks are drawn on top
-			if glyphMatches(mark, r) && m.rowMatches(mark, y) {
-				return mark.ID
-			}
-		}
+	if id := owners[y][x]; id != "" {
+		return id
 	}
 	const radius = 2
 	best, bestDist := "", radius+1
-	for _, mark := range s.Marks {
-		for dy := -radius; dy <= radius; dy++ {
-			yy := y + dy
-			if yy < 0 || yy >= len(g) {
+	for dy := -radius; dy <= radius; dy++ {
+		yy := y + dy
+		if yy < 0 || yy >= len(owners) {
+			continue
+		}
+		for dx := -radius; dx <= radius; dx++ {
+			xx := x + dx
+			if xx < 0 || xx >= len(owners[yy]) {
 				continue
 			}
-			for dx := -radius; dx <= radius; dx++ {
-				xx := x + dx
-				if xx < 0 || xx >= len(g[yy]) {
-					continue
-				}
-				r := g[yy][xx].Rune
-				if r != ' ' && glyphMatches(mark, r) && m.rowMatches(mark, y) {
-					if d := absInt(dx) + absInt(dy); d < bestDist {
-						best, bestDist = mark.ID, d
-					}
-				}
+			d := absInt(dx) + absInt(dy)
+			if d == 0 || d >= bestDist {
+				continue
+			}
+			if id := owners[yy][xx]; id != "" {
+				best, bestDist = id, d
 			}
 		}
 	}
@@ -597,9 +534,27 @@ func markURL(m model, mark scene.Mark) string {
 	case "release":
 		return base + "releases/tag/" + url.PathEscape(v)
 	case "deployment":
-		return base + "deployments/" + url.PathEscape(mark.Label)
+		// The recorded deployment ID, not its environment name: two
+		// deployments to the same environment must open different objects.
+		return base + "deployments/" + url.PathEscape(v)
 	}
 	return ""
+}
+
+// clean replaces every non-printable rune with a visible question mark before
+// a recorded value is measured or drawn. Repository text can hold newlines,
+// escapes or bidi controls; none of them may become a panel row or a terminal
+// instruction. It is applied to labels and field names as well as values.
+func clean(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('?')
+		}
+	}
+	return b.String()
 }
 
 // fit truncates a panel line to the terminal width, so a long SHA or URL
@@ -629,12 +584,12 @@ func detailLines(m model, mark scene.Mark) []string {
 	if len(fs) > 6 {
 		fs = fs[:6] // the panel reserves six field rows
 	}
-	lines := []string{mark.Kind + "  " + mark.Label}
+	lines := []string{clean(mark.Kind) + "  " + clean(mark.Label)}
 	for _, f := range fs {
-		lines = append(lines, fmt.Sprintf("  %-10s %s", f.name, f.value))
+		lines = append(lines, fmt.Sprintf("  %-10s %s", clean(f.name), clean(f.value)))
 	}
 	if u := markURL(m, mark); u != "" {
-		lines = append(lines, fmt.Sprintf("  %-10s %s", "github", u))
+		lines = append(lines, fmt.Sprintf("  %-10s %s", "github", clean(u)))
 	} else {
 		lines = append(lines, "  github     no URL: replay has no repository")
 	}
@@ -648,15 +603,22 @@ func detailLines(m model, mark scene.Mark) []string {
 // browserCommand picks a launcher without a shell interpreting the URL.
 // BROWSER, when set, is split into an executable and its arguments.
 func browserCommand(rawURL string) *exec.Cmd {
+	return browserCommandFor(runtime.GOOS, rawURL)
+}
+
+// browserCommandFor makes the Windows launcher testable. rundll32 calls the
+// URL handler directly; cmd /c start would hand repository-derived text to a
+// shell, where metacharacters could be parsed as another command.
+func browserCommandFor(goos, rawURL string) *exec.Cmd {
 	if b := strings.Fields(os.Getenv("BROWSER")); len(b) > 0 {
 		args := append(append([]string{}, b[1:]...), rawURL)
 		return exec.Command(b[0], args...)
 	}
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		return exec.Command("open", rawURL)
 	case "windows":
-		return exec.Command("cmd", "/c", "start", "", rawURL)
+		return exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", rawURL)
 	default:
 		return exec.Command("xdg-open", rawURL)
 	}
@@ -666,8 +628,13 @@ func openBrowserCmd(rawURL string) tea.Cmd {
 	if rawURL == "" {
 		return nil
 	}
+	// Only a plain web URL is ever handed to a launcher. Whitespace, control
+	// characters and credentials have no place in one of our recorded links.
+	if strings.IndexFunc(rawURL, func(r rune) bool { return r <= ' ' || r == 0x7f }) >= 0 {
+		return nil
+	}
 	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
 		return nil
 	}
 	return func() tea.Msg {
@@ -680,28 +647,10 @@ func openBrowserCmd(rawURL string) tea.Cmd {
 
 func (m model) View() tea.View {
 	s, frame := m.viewScene()
-	_, mark, hasSelection := m.selectedMark(s)
-	if hasSelection {
-		s.SelectedID = mark.ID
-		count := scene.VisibleLanes(m.width)
-		if mark.Lane < s.FirstLane || mark.Lane >= s.FirstLane+count {
-			s.FirstLane = mark.Lane
-		}
-	}
-	reserve := m.reserve()
-	height := max(0, m.height-reserve)
+	lines := m.footer()
+	height := max(0, m.height-len(lines))
 	text := paint(scene.Frame(s, frame, m.width, height), true)
-	footer := "tab / arrows / mouse  ·  enter details  ·  o browser  ·  q"
-	if m.notice != "" {
-		footer = m.notice + "  ·  " + footer
-	}
-	if m.refreshFailed {
-		footer = "refresh failed; retrying  ·  " + footer
-	}
-	if m.details && hasSelection {
-		footer = strings.Join(detailLines(m, mark), "\n") + "\n\n" + footer
-	}
-	footer = lipgloss.NewStyle().Width(max(0, m.width)).MaxWidth(max(0, m.width)).MaxHeight(reserve).Render(footer)
+	footer := lipgloss.NewStyle().Width(max(0, m.width)).MaxWidth(max(0, m.width)).MaxHeight(len(lines)).Render(strings.Join(lines, "\n"))
 	if height > 0 {
 		text += "\n"
 	}

@@ -183,17 +183,38 @@ func short(s string) string {
 	return s
 }
 
+// Owners names the mark that drew each rendered cell. Paths, labels written by
+// the header and other decoration carry no owner. It is built in the same pass
+// as the visible frame, so input can hit-test what is actually on screen
+// instead of guessing from a glyph that repeats across lanes and rows.
+type Owners [][]string
+
 // Frame uses no time, I/O, randomness, or terminal state. Path cells show the
 // union of the recorded segments through them; mark overlaps resolve in
 // snapshot order, and the selected object is drawn last so it is inspectable.
 func Frame(s Scene, frameIndex, width, height int) Grid {
+	g, _ := FrameWithOwners(s, frameIndex, width, height)
+	return g
+}
+
+// FrameWithOwners returns the frame and its cell ownership from one render.
+// Overlaps go to the mark drawn last, matching the visible glyph, and an empty
+// cell has no owner. A tiny frame draws only the title and owns nothing.
+func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	width = max(0, width)
 	height = max(0, height)
 	g := make(Grid, height)
+	owners := make(Owners, height)
 	for y := range g {
 		g[y] = make([]Cell, width)
+		owners[y] = make([]string, width)
 		for x := range g[y] {
 			g[y][x] = Cell{' ', Plain}
+		}
+	}
+	own := func(x, y int, id string) {
+		if y >= 0 && y < height && x >= 0 && x < width {
+			owners[y][x] = id
 		}
 	}
 	put := func(x, y int, r rune, style Style) {
@@ -211,7 +232,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	}
 	if width < 5 || height < 7 {
 		label(0, 0, "percolate", width, Fresh)
-		return g
+		return g, owners
 	}
 	lay := newLaneLayout(s, width, height)
 	start, count := lay.start, lay.count
@@ -384,6 +405,8 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 		case "pr":
 			bx, by := prEndpoint(m)
 			if path {
+				// A shared flow belongs to no single pull request, so it stays
+				// unowned; only the diamond and number name a PR.
 				for xx := min(x, bx); xx <= max(x, bx); xx++ {
 					put(xx, by, '─', style)
 				}
@@ -422,11 +445,19 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 				put(bx, by, arrow, arrowStyle)
 			}
 			put(x, by, m.Glyph, style)
+			own(x, by, m.ID)
 			label(x+1, by-1, m.Label, lay.widthOf(m.Lane)-2, style)
+			for i := range []rune(m.Label) {
+				if i >= lay.widthOf(m.Lane)-2 {
+					break
+				}
+				own(x+1+i, by-1, m.ID)
+			}
 		case "run":
 			if cells := runCells(m, frameIndex, max(1, lay.widthOf(m.Lane)-2), selected); len(cells) > 0 {
 				for i, c := range cells {
 					put(x+2+i, y, c.Rune, c.Style)
+					own(x+2+i, y, m.ID)
 				}
 				return
 			}
@@ -438,8 +469,10 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 				}
 			}
 			put(x+2, y, glyph, style)
+			own(x+2, y, m.ID)
 		default:
 			put(x, y, m.Glyph, style)
+			own(x, y, m.ID)
 		}
 	}
 	// Draw in two layers, fading first and surviving second, so everything
@@ -479,7 +512,7 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 	drawReleases(g, s, releaseView{
 		width: width, height: height, bottom: bottom,
 		widthOf: lay.widthOf, xpos: xpos, visible: visible,
-	})
-	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, widthOf: lay.widthOf, xpos: xpos, visible: visible})
-	return g
+	}, own)
+	drawIssues(g, s, issueView{width: width, height: height, top: top, bottom: bottom, widthOf: lay.widthOf, xpos: xpos, visible: visible}, own)
+	return g, owners
 }

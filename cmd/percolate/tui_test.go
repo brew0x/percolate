@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,44 @@ func TestDetailPanelReplayHasNoURL(t *testing.T) {
 	}
 }
 
+// Repository-controlled text cannot add rows or terminal instructions to the
+// panel. Newlines, escapes and bidi controls are replaced before measurement,
+// so every field still occupies exactly one measured line.
+func TestDetailPanelSanitizesRepositoryText(t *testing.T) {
+	hostile := "safe\r\n  github     https://evil.example\x1b[31m\u202e"
+	snap := repo.Snapshot{Issues: []repo.Issue{{Number: 5, Title: hostile, State: "open"}}}
+	m := uiModel(snap)
+	lines := detailLines(m, markByID(t, m, "issue:5"))
+	if len(lines) != 6 {
+		t.Fatalf("hostile title changed the panel shape: %d lines: %q", len(lines), lines)
+	}
+	if !strings.HasPrefix(lines[0], "issue  #5") {
+		t.Fatalf("panel header changed: %q", lines[0])
+	}
+	for i, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("line %d was spoofed into a panel row: %q", i+1, line)
+		}
+		if strings.ContainsAny(line, "\r\x1b\u202e") {
+			t.Fatalf("control character survived in line %d: %q", i+1, line)
+		}
+	}
+	github := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "  github") {
+			github++
+		}
+	}
+	if github != 1 || !strings.Contains(lines[5], "https://github.com/acme/widgets/issues/5") {
+		t.Fatalf("panel lost its real URL:\n%s", strings.Join(lines, "\n"))
+	}
+	// Labels are sanitized too, not just values.
+	header := detailLines(m, scene.Mark{ID: "deployment:7", Kind: "deployment", Label: "prod\n\x1b[31m"})[0]
+	if strings.ContainsAny(header, "\n\x1b") || !strings.HasPrefix(header, "deployment  prod??") {
+		t.Fatalf("hostile label changed the header: %q", header)
+	}
+}
+
 func TestMarkURLUsesGitHubRoutes(t *testing.T) {
 	m := uiModel(repo.Snapshot{})
 	for _, tt := range []struct {
@@ -112,7 +151,7 @@ func TestMarkURLUsesGitHubRoutes(t *testing.T) {
 		{scene.Mark{ID: "issue:5", Kind: "issue"}, "https://github.com/acme/widgets/issues/5"},
 		{scene.Mark{ID: "run:8", Kind: "run"}, "https://github.com/acme/widgets/actions/runs/8"},
 		{scene.Mark{ID: "release:v1.0", Kind: "release"}, "https://github.com/acme/widgets/releases/tag/v1.0"},
-		{scene.Mark{ID: "deployment:4", Kind: "deployment", Label: "prod/eu"}, "https://github.com/acme/widgets/deployments/prod%2Feu"},
+		{scene.Mark{ID: "deployment:4", Kind: "deployment", Label: "prod/eu"}, "https://github.com/acme/widgets/deployments/4"},
 	} {
 		if got := markURL(m, tt.mark); got != tt.want {
 			t.Fatalf("%s: got %q, want %q", tt.mark.ID, got, tt.want)
@@ -120,6 +159,13 @@ func TestMarkURLUsesGitHubRoutes(t *testing.T) {
 	}
 	if got := markURL(m, scene.Mark{ID: "unknown:1", Kind: "unknown"}); got != "" {
 		t.Fatalf("unknown kind got a URL: %q", got)
+	}
+	// Two deployments to one environment are different recorded objects; their
+	// links must differ even though their labels are identical.
+	first := markURL(m, scene.Mark{ID: "deployment:41", Kind: "deployment", Label: "prod"})
+	second := markURL(m, scene.Mark{ID: "deployment:42", Kind: "deployment", Label: "prod"})
+	if first == second || !strings.HasSuffix(first, "/deployments/41") || !strings.HasSuffix(second, "/deployments/42") {
+		t.Fatalf("same-environment deployments collapsed: %q and %q", first, second)
 	}
 }
 
@@ -132,6 +178,17 @@ func TestBrowserCommandAndOpenKey(t *testing.T) {
 	}
 	if openBrowserCmd("file:///etc/passwd") != nil || openBrowserCmd("") != nil {
 		t.Fatal("a non-web URL was offered to the browser")
+	}
+	if openBrowserCmd("https://github.com/acme/widgets\nopen calc") != nil {
+		t.Fatal("a URL with a control character was offered to the browser")
+	}
+
+	// No shell may parse a URL derived from repository data. The Windows
+	// launcher calls the URL handler directly rather than cmd /c start.
+	t.Setenv("BROWSER", "")
+	win := browserCommandFor("windows", rawURL)
+	if got, want := strings.Join(win.Args, "|"), "rundll32.exe|url.dll,FileProtocolHandler|"+rawURL; got != want {
+		t.Fatalf("Windows browser args %q, want %q", got, want)
 	}
 
 	snap := repo.Snapshot{Commits: []repo.Commit{{SHA: "abc"}}}
@@ -268,6 +325,146 @@ func TestTUIDetailGolden(t *testing.T) {
 		}
 		if got != string(want) {
 			t.Fatalf("detail panel differs from %s:\n got:\n%s\nwant:\n%s", path, got, want)
+		}
+	}
+}
+
+// The same glyph on several lanes must name several objects. Every drawn PR
+// diamond is tested, including a click that opens only that PR's own URL.
+func TestMouseSelectsEachRepeatedGlyph(t *testing.T) {
+	var branches []repo.Branch
+	var prs []repo.PullRequest
+	for i := 0; i < 3; i++ {
+		head, base := fmt.Sprintf("topic-%d", i), fmt.Sprintf("base-%d", i)
+		branches = append(branches, repo.Branch{Name: head}, repo.Branch{Name: base})
+		prs = append(prs, repo.PullRequest{Number: i + 7, Head: head, Base: base})
+	}
+	m := uiModel(repo.Snapshot{Branches: branches, PullRequests: prs})
+	s, frame := m.viewScene()
+	g := scene.Frame(s, frame, m.width, m.height-m.reserve())
+	seen := map[string]bool{}
+	for y, row := range g {
+		for x, cell := range row {
+			if cell.Rune != '◇' {
+				continue
+			}
+			id := m.markAt(x, y)
+			if !strings.HasPrefix(id, "pr:") {
+				t.Fatalf("PR cell %d,%d named %q", x, y, id)
+			}
+			seen[id] = true
+			next, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			clicked := next.(model)
+			if clicked.selectionID() != id {
+				t.Fatalf("click at %d,%d selected %q, want %q", x, y, clicked.selectionID(), id)
+			}
+			want := "https://github.com/acme/widgets/pull/" + strings.TrimPrefix(id, "pr:")
+			if got := markURL(clicked, markByID(t, clicked, id)); got != want {
+				t.Fatalf("click at %d,%d opened %q, want %q", x, y, got, want)
+			}
+		}
+	}
+	if len(seen) != len(prs) {
+		t.Fatalf("repeated diamonds collapsed to %d objects: %v", len(seen), seen)
+	}
+}
+
+// Keyboard navigation can scroll a selected lane into view. A click after that
+// must hit-test the viewport View actually draws, not the unscrolled scene.
+func TestMouseHitTestsScrolledViewport(t *testing.T) {
+	var branches []repo.Branch
+	for i := 0; i < 8; i++ { // more lanes than a 100-column viewport shows
+		branches = append(branches, repo.Branch{Name: fmt.Sprintf("b%d", i)})
+	}
+	snap := repo.Snapshot{
+		Branches:     branches,
+		PullRequests: []repo.PullRequest{{Number: 1, Head: "b0", Base: "b1"}, {Number: 8, Head: "b7", Base: "b6"}},
+	}
+	m := uiModel(snap)
+	next, _ := m.Update(tea.KeyPressMsg{Code: '\t'})
+	m = next.(model)
+	if got := m.selectionID(); got != "pr:8" {
+		t.Fatalf("tab selected %q, want pr:8", got)
+	}
+	s, frame := m.viewScene()
+	if s.FirstLane == 0 {
+		t.Fatal("keyboard selection did not bring its lane into view")
+	}
+	g := scene.Frame(s, frame, m.width, m.height-m.reserve())
+	diamonds := 0
+	for y, row := range g {
+		for x, cell := range row {
+			if cell.Rune != '◇' {
+				continue
+			}
+			diamonds++
+			if id := m.markAt(x, y); id != "pr:8" {
+				t.Fatalf("scrolled cell %d,%d named %q, want pr:8", x, y, id)
+			}
+			clicked, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			if got := clicked.(model).selectionID(); got != "pr:8" {
+				t.Fatalf("click in scrolled viewport selected %q", got)
+			}
+		}
+	}
+	if diamonds == 0 {
+		t.Fatal("no PR diamond in the scrolled viewport")
+	}
+}
+
+var sgrPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// plainView keeps the assembled view's exact rows and contents, dropping only
+// the colour codes so a reviewer can read the golden as text.
+func plainView(m model) string { return sgrPattern.ReplaceAllString(m.View().Content, "") }
+
+// These goldens capture the whole rendered view, not detailLines alone, at a
+// normal and a short terminal. They prove the URL and controls stay visible.
+func TestTUIViewGolden(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/small.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	base := uiModel(snap)
+	base.details = true
+	base.selectID("commit:" + snap.Commits[0].SHA)
+	for _, tt := range []struct {
+		name          string
+		width, height int
+	}{
+		{"normal", 100, 30},
+		{"short", 60, 8},
+	} {
+		m := base
+		m.width, m.height = tt.width, tt.height
+		got := plainView(m)
+		if lines := strings.Count(got, "\n") + 1; lines > tt.height {
+			t.Fatalf("%s view has %d lines for %d rows", tt.name, lines, tt.height)
+		}
+		for _, want := range []string{
+			"https://github.com/acme/widgets/commit/",
+			"tab / arrows / mouse  ·  enter details  ·  o browser  ·  q",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s view lost %q:\n%s", tt.name, want, got)
+			}
+		}
+		path := "../../testdata/golden/tui-view-" + tt.name + ".txt"
+		if *updateTUI {
+			if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != string(want) {
+			t.Fatalf("rendered view differs from %s:\n got:\n%s\nwant:\n%s", path, got, want)
 		}
 	}
 }
