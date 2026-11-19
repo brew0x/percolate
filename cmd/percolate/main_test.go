@@ -58,6 +58,29 @@ func TestCLI(t *testing.T) {
 		})
 	}
 }
+
+// The first picture in the README is a still of the bundled small fixture. It
+// must be a frame Percolate actually draws, not an old picture left behind by a
+// renderer change: a release's storefront is held to the same golden proof as
+// the program itself.
+func TestREADMEFrameMatchesGolden(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := regexp.MustCompile("(?s)```text\n(.*?)```").FindSubmatch(readme)
+	if block == nil {
+		t.Fatal("README has no text frame")
+	}
+	golden, err := os.ReadFile("../../testdata/golden/small-100x30-07.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(block[1]) != string(golden) {
+		t.Fatalf("README frame is not the reviewed small frame 7:\n got:\n%s\nwant:\n%s", block[1], golden)
+	}
+}
+
 func TestNavigationDetailsResizeAndQuit(t *testing.T) {
 	m := model{s: scene.Build(repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}, Commits: []repo.Commit{{SHA: "abc", Branch: "main", Author: "robin"}, {SHA: "def", Branch: "main"}}}), width: 60, height: 20}
 	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
