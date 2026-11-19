@@ -14,3 +14,9 @@ jobs:
       # Frame cost is also asserted as a 5 ms budget inside make check; this
       # step prints the measured busy and 500-PR frame numbers in the log.
       - run: go test ./internal/scene -run '^$' -bench 'BenchmarkBusyFrame|BenchmarkScaleFrame' -benchtime=200x -benchmem
+      - name: Demo recording up to date
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg fonts-liberation fontconfig
+          make demo
+          git diff --exit-code -- demo/percolate.gif demo/demo.tape demo/generate.sh
