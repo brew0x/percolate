@@ -114,12 +114,14 @@ merged lane ends at its merge path; no merge is inferred from PR state. A newer
 commit after a merge keeps that lane active. Compressed rows may overlap paths;
 rounded elbows remain evidence of recorded parent links, never branch-name guesses.
 Details report only recorded fields: a run without a recorded job list says
-`jobs not recorded` rather than a numeric zero, a release without recorded
-artifacts says `artifacts not recorded` instead of an empty name, and a
-deployment without a recorded state reports `state: not recorded` rather than
-leaving the field blank. A release lists each
-recorded artifact name even when the bottom strip could not fit it. A run that records failing jobs names them in
-its details (`failing: test, lint`), matching the fail cells in its job strip. A pull request lists its recorded reviews and
+`jobs not recorded` rather than a numeric zero, while a recorded list counts
+its jobs (`1 job`, `2 jobs`) and still names each recorded failure. A release
+without recorded artifacts says `artifacts not recorded` instead of an empty
+name, and a deployment without a recorded state reports `state: not recorded`
+rather than leaving the field blank. A release lists each recorded artifact
+name even when the bottom strip could not fit it. A run that records failing
+jobs names them in its details (`failing: test, lint`), matching the fail cells
+in its job strip. A pull request lists its recorded reviews and
 adds the resolved review state under `resolved` (`resolved: waiting`,
 `resolved: approved`, `resolved: changes requested`) — the same fact its
 convergence mark draws. The `reviews` field above it holds the recorded
