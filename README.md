@@ -82,7 +82,8 @@ percolate brew0x/percolate --record snapshot.json
 percolate --fixture snapshot.json
 ```
 
-From a checkout, open the bundled fictional landscapes:
+Installed binaries contain no fixtures: the bundled landscapes and the public
+recording below live in a repository checkout. From the checkout root:
 
 ```sh
 percolate --fixture testdata/fixtures/small.json
@@ -95,9 +96,12 @@ budget are checked in CI alongside the smaller ones.
 
 There is also a real public recording, captured from an unauthenticated read of
 `hivemq/hivemq-hello-world-datahub-module` (provenance in
-`testdata/fixtures/README.md`). Replay it exactly, offline:
+`testdata/fixtures/README.md`). If you installed Percolate without a checkout,
+get one first, then replay from its root:
 
 ```sh
+git clone https://github.com/brew0x/percolate.git
+cd percolate
 percolate --fixture testdata/fixtures/recorded-hivemq.json
 ```
 
@@ -116,10 +120,11 @@ object's recorded fields and its GitHub URL (a replay has no URL to show), `o`
 opens that URL in the browser, escape closes the panel, and q quits. Selection
 reveals offscreen lanes. Resize the terminal freely.
 
-Capture one reproducible frame without ANSI sequences:
+From that checkout, capture one reproducible frame without ANSI sequences (no
+token, no terminal needed):
 
 ```sh
-percolate render --fixture testdata/fixtures/small.json --frame 7 --size 100x30 --color=false
+percolate render --fixture testdata/fixtures/recorded-hivemq.json --frame 7 --size 100x30 --color=false
 percolate version
 ```
 

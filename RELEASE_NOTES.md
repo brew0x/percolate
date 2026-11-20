@@ -31,10 +31,12 @@ percolate brew0x/percolate
 ```
 
 The first argument is a repository as `owner/repo`. Give it a token through
-`GITHUB_TOKEN` or `gh auth login`; if you'd rather not, you can replay the real
-public recording that ships with a checkout:
+`GITHUB_TOKEN` or `gh auth login`. Installed binaries ship only the program,
+not the recorded fixtures, so the token-free replay needs a checkout:
 
 ```sh
+git clone https://github.com/brew0x/percolate.git
+cd percolate
 percolate --fixture testdata/fixtures/recorded-hivemq.json
 ```
 
@@ -42,8 +44,8 @@ Arrows or tab step through marks, enter opens their recorded fields, `o` opens
 the GitHub page in live mode, and `q` quits. The mouse wheel and clicking work
 too.
 
-A recorded snapshot always draws the same picture. If you want a still frame
-to compare or share, ask for one:
+A recorded snapshot always draws the same picture. From that checkout, if you
+want a still frame to compare or share, ask for one:
 
 ```sh
 percolate render --fixture testdata/fixtures/recorded-hivemq.json --frame 7 --size 100x30 --color=false
