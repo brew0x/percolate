@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -47,7 +48,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	defer resp.Body.Close()
 	c.requests++
 	if resp.StatusCode != http.StatusOK {
-		return nil, responseError(resp, "GraphQL")
+		return nil, responseError(resp, "GraphQL", time.Now())
 	}
 	const limit = 16 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))

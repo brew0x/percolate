@@ -30,9 +30,11 @@ returns only the data member; any server-side error rejects the whole call, so
 partial results cannot be mistaken for complete data. Every REST and GraphQL
 request is counted by `Client.Requests()`.
 
-Rate-limit responses (403/429 with `X-RateLimit-Remaining: 0` or a
-`Retry-After`) produce one line that says when to come back. Server error
-text is flattened to a single line; bodies and tokens never appear in errors.
+Rate-limit responses (403/429 with `X-RateLimit-Remaining: 0` or a `Retry-After`
+given in seconds or as an HTTP date) produce one line that says when to come
+back; a date already past reports zero. Missing, malformed or absurd retry
+values keep the bare HTTP error. Server error text is flattened to a single
+line; bodies and tokens never appear in errors.
 
 `Client.BuildSnapshot(ctx, SnapshotOptions)` assembles a `repo.Snapshot`
 from bounded REST lists (repository meta, branches, default-branch commits,
