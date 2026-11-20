@@ -113,6 +113,26 @@ func TestVisualLanguageNamesResolvedReviewField(t *testing.T) {
 	}
 }
 
+// The details paragraph in the visual-language doc is the promise about what a
+// missing field reads like. A deployment with no recorded state says `not
+// recorded`, just as a run with no conclusion does; keeping the doc's label in
+// step stops anyone being told the field is left blank.
+func TestVisualLanguageNamesMissingStateField(t *testing.T) {
+	snap := repo.Snapshot{Deployments: []repo.Deployment{{ID: 7, Environment: "prod"}}}
+	m := uiModel(snap)
+	panel := panelText(m, markByID(t, m, "deployment:7"))
+	if !strings.Contains(panel, "state") || !strings.Contains(panel, "not recorded") {
+		t.Fatalf("deployment panel lost its missing-state wording:\n%s", panel)
+	}
+	doc, err := os.ReadFile("../../docs/visual-language.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "`state: not recorded`"; !strings.Contains(string(doc), want) {
+		t.Fatalf("visual-language doc does not name the panel's missing-state field %q", want)
+	}
+}
+
 // A replay has no repository to link to, so the panel says so instead of
 // inventing a URL from a fixture name or a mark label.
 func TestDetailPanelReplayHasNoURL(t *testing.T) {

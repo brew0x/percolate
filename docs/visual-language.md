@@ -116,7 +116,8 @@ rounded elbows remain evidence of recorded parent links, never branch-name guess
 Details report only recorded fields: a run without a recorded job list says
 `jobs not recorded` rather than a numeric zero, a release without recorded
 artifacts says `artifacts not recorded` instead of an empty name, and a
-deployment without a recorded state leaves it blank. A release lists each
+deployment without a recorded state reports `state: not recorded` rather than
+leaving the field blank. A release lists each
 recorded artifact name even when the bottom strip could not fit it. A run that records failing jobs names them in
 its details (`failing: test, lint`), matching the fail cells in its job strip. A pull request lists its recorded reviews and
 adds the resolved review state under `resolved` (`resolved: waiting`,
