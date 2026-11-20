@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestGraphQLRequest(t *testing.T) {
@@ -53,6 +54,7 @@ func TestGraphQLErrors(t *testing.T) {
 		absent   string
 	}{
 		{"server error message", 200, nil, `{"errors":[{"message":"bad\nmulti"}]}`, "bad multi", "\n"},
+		{"server escape", 200, nil, `{"errors":[{"message":"bad\u001b[2Jtext\u202e"}]}`, "bad?[2Jtext?", "\x1b"},
 		{"unauthorized", 401, nil, "secret", "HTTP 401", "secret"},
 		{"invalid json", 200, nil, "{oops", "invalid JSON", "oops"},
 		{"no data", 200, nil, `{}`, "no data", "never present"},
@@ -118,5 +120,17 @@ func TestOneLine(t *testing.T) {
 	}
 	if oneLine(" \n ") != "unknown error" {
 		t.Fatal("empty message not replaced")
+	}
+	// A server can put more than newlines in an error message. Escapes and
+	// bidi controls become visible question marks, so the CLI never writes a
+	// terminal instruction when it reports a failed first read.
+	unsafe := oneLine("bad\x1b[2Jtext\u202eend\x00")
+	if unsafe != "bad?[2Jtext?end?" {
+		t.Fatalf("oneLine did not neutralise control runes: %q", unsafe)
+	}
+	for _, r := range unsafe {
+		if !unicode.IsPrint(r) {
+			t.Fatalf("oneLine left a non-printable rune: %q", unsafe)
+		}
 	}
 }

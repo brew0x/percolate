@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode"
 )
 
 type graphqlError struct {
@@ -69,13 +70,20 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	return result.Data, nil
 }
 
-// oneLine flattens server text into a short single-line message.
+// oneLine flattens server text into a short single-line message. Every
+// non-printable rune becomes a visible question mark, not just newlines: a
+// server-supplied escape or bidi control must never survive into the single
+// line the CLI writes to stderr on a failed first read, before the TUI's own
+// clean() can see it.
 func oneLine(s string) string {
 	s = strings.Map(func(r rune) rune {
-		if r == '\n' || r == '\r' || r == '\t' {
+		if unicode.IsSpace(r) {
 			return ' '
 		}
-		return r
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return '?'
 	}, strings.TrimSpace(s))
 	if runes := []rune(s); len(runes) > 200 {
 		s = string(runes[:200])

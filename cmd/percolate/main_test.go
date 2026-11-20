@@ -448,6 +448,47 @@ func TestWatchLiveFailure(t *testing.T) {
 	}
 }
 
+// A GraphQL error is server text. On a failed first read the CLI prints it to
+// stderr before the TUI exists, so an escape or bidi control in that message
+// must already have been neutralised at the transport boundary. No repository
+// response may write a terminal instruction through the error path.
+func TestWatchLiveGraphQLErrorIsSafeOnStderr(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/acme/widgets":
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		case "/repos/acme/widgets/branches":
+			fmt.Fprint(w, `[{"name":"main"}]`)
+		case "/repos/acme/widgets/actions/runs":
+			fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
+		case "/repos/acme/widgets/commits",
+			"/repos/acme/widgets/releases", "/repos/acme/widgets/deployments":
+			fmt.Fprint(w, `[]`)
+		case "/repos/acme/widgets/pulls":
+			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)
+		case "/graphql":
+			fmt.Fprint(w, `{"errors":[{"message":"backend\u001b[2J\u202ebroke"}]}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("PERCOLATE_GITHUB_URL", server.URL)
+	var out, errOut bytes.Buffer
+	if code := run([]string{"acme/widgets"}, &out, &errOut); code != 1 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	message := errOut.String()
+	if !strings.Contains(message, "backend?[2J?broke") {
+		t.Fatalf("server message lost its visible text: %q", message)
+	}
+	if strings.ContainsAny(message, "\x1b\u202e\x00") {
+		t.Fatalf("live error wrote a control character to stderr: %q", message)
+	}
+}
+
 // A live refresh that changes the snapshot starts a frame-indexed transition;
 // an unchanged poll does not replay one, and the transition ends on its own.
 func TestLiveRefreshStartsTransition(t *testing.T) {
