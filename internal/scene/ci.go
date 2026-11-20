@@ -28,14 +28,8 @@ func buildRuns(s repo.Snapshot, bySHA map[string]Mark, addLane func(string) int)
 		if !ok {
 			anchor = Mark{Lane: addLane("unlinked"), Total: 1}
 		}
-		glyph, style := RunGlyph(r.Conclusion), Pass
-		if r.Conclusion != "success" {
-			style = Fail
-		}
+		glyph, style := runGlyph(r.Status, r.Conclusion), runStyle(r.Status, r.Conclusion)
 		running := r.Status != "completed"
-		if running {
-			glyph, style = '◌', Pulse
-		}
 		runs = append(runs, Mark{
 			ID:      fmt.Sprintf("run:%d", r.ID),
 			Kind:    "run",
@@ -62,15 +56,8 @@ func jobMarks(jobs []repo.Job) []JobMark {
 	}
 	out := make([]JobMark, 0, len(jobs))
 	for _, j := range jobs {
-		glyph, style := RunGlyph(j.Conclusion), Plain
-		switch {
-		case j.Running():
-			glyph, style = '◌', Pulse
-		case j.Failed():
-			style = Fail
-		case j.Conclusion == "success":
-			style = Pass
-		}
+		glyph := runGlyph(j.Status, j.Conclusion)
+		style := runStyle(j.Status, j.Conclusion)
 		out = append(out, JobMark{Glyph: glyph, Style: style, Running: j.Running(), Failed: j.Failed()})
 	}
 	return out
@@ -108,13 +95,41 @@ func failingJobNames(jobs []repo.Job) string {
 // RunGlyph keeps success, failure, and other completed outcomes distinct for
 // a run and for each recorded job.
 func RunGlyph(conclusion string) rune {
-	switch conclusion {
-	case "success":
+	switch {
+	case conclusion == "success":
 		return '✓'
-	case "failure", "timed_out", "startup_failure":
+	case repo.FailedConclusion(conclusion):
 		return '✕'
 	default:
 		return '−'
+	}
+}
+
+// runGlyph keeps an unfinished run or job on the pulse glyph, whatever its
+// recorded conclusion says.
+func runGlyph(status, conclusion string) rune {
+	if status != "completed" {
+		return '◌'
+	}
+	return RunGlyph(conclusion)
+}
+
+// runStyle colours only what the snapshot recorded: a real failure is red,
+// success green, and every other completed conclusion keeps the neutral
+// palette of its − mark. Cancelled and skipped runs must not read as failures
+// just because they are not successes. Aggregate runs and recorded jobs share
+// this helper so the same conclusion cannot be coloured differently in the
+// two places.
+func runStyle(status, conclusion string) Style {
+	switch {
+	case status != "completed":
+		return Pulse
+	case repo.FailedConclusion(conclusion):
+		return Fail
+	case conclusion == "success":
+		return Pass
+	default:
+		return Plain
 	}
 }
 

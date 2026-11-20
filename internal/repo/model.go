@@ -48,15 +48,21 @@ type Job struct {
 // never freezes a job on a success glyph it did not record.
 func (j Job) Running() bool { return j.Status != "completed" }
 
-// Failed reports whether the recorded conclusion is a failure. Cancelled,
-// skipped and neutral jobs are not failures; they keep the neutral mark.
-func (j Job) Failed() bool {
-	switch j.Conclusion {
+// FailedConclusion reports whether a recorded workflow conclusion is a
+// failure. Cancelled, skipped and neutral conclusions are not failures; they
+// keep the neutral mark. Runs and their recorded jobs share this so the same
+// conclusion cannot mean two different things.
+func FailedConclusion(conclusion string) bool {
+	switch conclusion {
 	case "failure", "timed_out", "startup_failure":
 		return true
 	}
 	return false
 }
+
+// Failed reports whether the recorded conclusion is a failure. Cancelled,
+// skipped and neutral jobs are not failures; they keep the neutral mark.
+func (j Job) Failed() bool { return FailedConclusion(j.Conclusion) }
 
 type WorkflowRun struct {
 	ID         int64  `json:"id"`
@@ -65,6 +71,10 @@ type WorkflowRun struct {
 	Conclusion string `json:"conclusion"`
 	Jobs       []Job  `json:"jobs"`
 }
+
+// Failed reports whether the recorded conclusion is a failure. Cancelled,
+// skipped and neutral runs are not failures; they keep the neutral mark.
+func (r WorkflowRun) Failed() bool { return FailedConclusion(r.Conclusion) }
 
 // Artifact is one recorded file published with a release. Only its name is
 // recorded: no contents, size or download count is inferred from it.
