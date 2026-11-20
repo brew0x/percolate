@@ -23,20 +23,40 @@ import (
 var ErrNoToken = errors.New("GitHub token required: set GITHUB_TOKEN or run gh auth login")
 
 // ResolveToken prefers GITHUB_TOKEN, falling back to the local gh credential
-// helper. Helper output is never included in errors or persisted.
+// helper for the host named by PERCOLATE_GITHUB_URL (github.com by default).
+// Helper output and errors are never included in errors or persisted.
 func ResolveToken(ctx context.Context) (string, error) {
-	return resolveToken(ctx, os.Getenv("GITHUB_TOKEN"), func(ctx context.Context) ([]byte, error) {
-		return exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com").Output()
-	})
+	return resolveToken(ctx, os.Getenv("GITHUB_TOKEN"), os.Getenv("PERCOLATE_GITHUB_URL"),
+		func(ctx context.Context, hostname string) ([]byte, error) {
+			return exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", hostname).Output()
+		})
 }
 
-func resolveToken(ctx context.Context, env string, helper func(context.Context) ([]byte, error)) (string, error) {
+// tokenHostname maps the configured API base URL to the hostname gh stores
+// credentials under. The default api.github.com, including an explicit :443,
+// maps back to github.com so the usual credential keeps working. Hostnames are
+// case-insensitive, so the result is lowercased; any other host keeps its port
+// but loses path, query and userinfo.
+func tokenHostname(base string) string {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Host == "" || u.User != nil {
+		return "github.com"
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "api.github.com" && (u.Port() == "" || u.Port() == "443") {
+		return "github.com"
+	}
+	return strings.ToLower(u.Host)
+}
+
+func resolveToken(ctx context.Context, env, base string, helper func(context.Context, string) ([]byte, error)) (string, error) {
 	if token := strings.TrimSpace(env); token != "" {
 		return token, nil
 	}
+	hostname := tokenHostname(base)
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	data, err := helper(ctx)
+	data, err := helper(ctx, hostname)
 	if err == nil {
 		if token := strings.TrimSpace(string(data)); token != "" {
 			return token, nil

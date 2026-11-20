@@ -5,8 +5,12 @@ repository through it, and rendering stays pure over the resulting snapshot.
 Credentials and cached responses are never written to disk.
 
 `ResolveToken(ctx)` prefers a nonempty `GITHUB_TOKEN`, then invokes
-`gh auth token --hostname github.com` with a five-second deadline. Failure
-returns one actionable line. Neither helper output nor tokens enter errors.
+`gh auth token --hostname <host>` with a five-second deadline. `<host>` comes
+from `PERCOLATE_GITHUB_URL` (default `github.com`; the default API host
+`api.github.com`, including an explicit `:443`, also maps to `github.com`).
+Hostnames are lowercased, so an Enterprise credential is found regardless of
+case. Failure returns one actionable line. Neither helper output, helper errors
+nor tokens enter errors, and nothing is persisted.
 
 `NewClient(token).ListPage(ctx, path)` requests one relative REST page on
 api.github.com. It keeps ETags and response JSON in memory, keys pages by the
@@ -69,9 +73,10 @@ mark per job beside its run, colours each deployment's flow by its recorded
 state, and names failing jobs in run details.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
-local servers; also the seam for a future GitHub Enterprise host). It must be
+local servers; also the seam for GitHub Enterprise hosts). It must be
 https, or http on loopback for local tests: every request carries a bearer
-token, so a mis-set plain-http host must not receive it in cleartext.
+token, so a mis-set plain-http host must not receive it in cleartext. Its host
+also selects the `gh` credential hostname used by `ResolveToken`.
 
 Recorded public fixtures (`testdata/fixtures/recorded-*.json`) must come from
 public repositories only, with provenance noted; never commit private repo

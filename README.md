@@ -141,6 +141,8 @@ Fork pull requests use their fork-qualified head label as a lane, so a fork's
 are not shown. The worst case is under 250 API requests.
 `PERCOLATE_GITHUB_URL` may point at a different GitHub host over https; plain
 http is accepted only on loopback, because every request carries your token.
+The same host selects the `gh auth login` credential when `GITHUB_TOKEN` is
+unset, so Enterprise hosts do not fall back to a github.com credential.
 
 ## Development
 
