@@ -129,12 +129,13 @@ func (c *Client) Requests() int {
 }
 
 // responseError turns a non-200 status into one safe line. Rate-limit
-// responses report when to come back; response bodies never appear.
-func responseError(resp *http.Response, kind string) error {
+// responses report when to come back; response bodies never appear. The caller
+// supplies now so tests can hold the clock still without waiting on it.
+func responseError(resp *http.Response, kind string, now time.Time) error {
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-				wait := time.Until(time.Unix(reset, 0)).Round(time.Second)
+				wait := time.Unix(reset, 0).Sub(now).Round(time.Second)
 				if wait < 0 {
 					wait = 0
 				}
@@ -142,7 +143,7 @@ func responseError(resp *http.Response, kind string) error {
 			}
 			return errors.New("GitHub rate limit exhausted")
 		}
-		if wait, ok := retryAfterWait(resp.Header.Get("Retry-After"), time.Now()); ok {
+		if wait, ok := retryAfterWait(resp.Header.Get("Retry-After"), now); ok {
 			return fmt.Errorf("GitHub rate limited; retry after %s", wait)
 		}
 	}
@@ -154,12 +155,13 @@ func responseError(resp *http.Response, kind string) error {
 // rounded to a second and floored at zero, so a date already past never yields
 // a negative duration. Missing, malformed or absurd values are not actionable.
 func retryAfterWait(header string, now time.Time) (time.Duration, bool) {
+	const maxSeconds = int64(1<<63-1) / int64(time.Second)
+	const maxWait = time.Duration(maxSeconds) * time.Second
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return 0, false
 	}
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
-		const maxSeconds = int64(1<<63-1) / int64(time.Second)
 		if seconds < 0 || seconds > maxSeconds {
 			return 0, false
 		}
@@ -172,6 +174,12 @@ func retryAfterWait(header string, now time.Time) (time.Duration, bool) {
 	wait := date.Sub(now).Round(time.Second)
 	if wait < 0 {
 		wait = 0
+	}
+	// time.Sub saturates at the largest duration, so an HTTP date beyond
+	// ~292 years would otherwise print a nonsense wait instead of the bare
+	// HTTP error used for every other unactionable value.
+	if wait > maxWait {
+		return 0, false
 	}
 	return wait, true
 }
@@ -210,7 +218,7 @@ func (c *Client) ListPage(ctx context.Context, path string) (json.RawMessage, er
 		return append(json.RawMessage(nil), cached.body...), nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, responseError(resp, "REST")
+		return nil, responseError(resp, "REST", time.Now())
 	}
 	const limit = 16 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
