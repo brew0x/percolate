@@ -3,5 +3,5 @@ run  CI 1
   status     in_progress
   conclusion not recorded
   head_sha   0000000c0000000000000000000000000000000c
-  jobs       1 jobs
+  jobs       1 job
   github     https://github.com/acme/widgets/actions/runs/1

@@ -519,7 +519,11 @@ func fields(mark scene.Mark, obj any) []field {
 	case repo.WorkflowRun:
 		jobs := "jobs not recorded"
 		if v.Jobs != nil {
-			jobs = fmt.Sprintf("%d jobs", len(v.Jobs))
+			noun := "jobs"
+			if len(v.Jobs) == 1 {
+				noun = "job"
+			}
+			jobs = fmt.Sprintf("%d %s", len(v.Jobs), noun)
 			var failing []string
 			for _, j := range v.Jobs {
 				if j.Failed() {

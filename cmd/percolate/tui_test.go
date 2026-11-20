@@ -133,6 +133,36 @@ func TestVisualLanguageNamesMissingStateField(t *testing.T) {
 	}
 }
 
+// A run's job count is a recorded number, not a decorative summary: one job
+// reads `1 job`, two read `2 jobs`, and a missing list still says so. The
+// visual-language doc names the same wording so the promise cannot drift.
+func TestVisualLanguageNamesRecordedJobCount(t *testing.T) {
+	panel := func(jobs []repo.Job) string {
+		run := repo.WorkflowRun{ID: 9, HeadSHA: "abc", Status: "completed", Conclusion: "success", Jobs: jobs}
+		m := uiModel(repo.Snapshot{Runs: []repo.WorkflowRun{run}})
+		return panelText(m, markByID(t, m, "run:9"))
+	}
+	build := []repo.Job{{Name: "build", Status: "completed", Conclusion: "success"}}
+	if one := panel(build); !strings.Contains(one, "1 job") || strings.Contains(one, "1 jobs") {
+		t.Fatalf("one recorded job was not counted as one:\n%s", one)
+	}
+	if two := panel(append(build, repo.Job{Name: "test", Status: "completed", Conclusion: "success"})); !strings.Contains(two, "2 jobs") {
+		t.Fatalf("two recorded jobs were not pluralised:\n%s", two)
+	}
+	if none := panel(nil); !strings.Contains(none, "jobs not recorded") || strings.Contains(none, "0 jobs") {
+		t.Fatalf("missing job list reported a count:\n%s", none)
+	}
+	doc, err := os.ReadFile("../../docs/visual-language.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"`jobs not recorded`", "`1 job`", "`2 jobs`"} {
+		if !strings.Contains(string(doc), want) {
+			t.Fatalf("visual-language doc does not name the panel's job wording %q", want)
+		}
+	}
+}
+
 // A replay has no repository to link to, so the panel says so instead of
 // inventing a URL from a fixture name or a mark label.
 func TestDetailPanelReplayHasNoURL(t *testing.T) {
