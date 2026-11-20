@@ -4,5 +4,5 @@
   parents    none recorded                                  
   time       2026-01-20T00:00:00Z                           
   github     https://github.com/acme/widgets/commit/00000…  
-refresh failed: GitHub rate limit exhausted; resets in 3h20…
+failed: GitHub rate limit exhausted; resets in 3h20m0s      
 tab / arrows / mouse  ·  enter details  ·  o browser  ·  q  

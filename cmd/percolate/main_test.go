@@ -654,6 +654,34 @@ func TestFailedRefreshShowsReasonAndClearsIt(t *testing.T) {
 	}
 }
 
+// A rate-limit reset is the actionable part of a failed read: the framing may
+// narrow, but it must yield the row before the reason is clipped. At a normal
+// short-terminal width the whole reset time stays readable.
+func TestFooterKeepsFailureReasonAtReviewWidth(t *testing.T) {
+	const reason = "GitHub rate limit exhausted; resets in 3h20m0s"
+	prev := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	for _, tt := range []struct {
+		width int
+		want  string
+	}{
+		{100, "refresh failed: " + reason + "; retrying"},
+		{60, "failed: " + reason},
+	} {
+		t.Run(fmt.Sprintf("width%d", tt.width), func(t *testing.T) {
+			m := model{s: scene.Build(prev), prev: prev, cur: prev, width: tt.width, height: 20, refreshErr: reason}
+			rows := m.footer()
+			if !strings.Contains(strings.Join(rows, "\n"), tt.want) {
+				t.Fatalf("width %d lost %q: %q", tt.width, tt.want, rows)
+			}
+			for _, row := range rows {
+				if lipgloss.Width(row) > tt.width {
+					t.Fatalf("width %d: row too wide: %q", tt.width, row)
+				}
+			}
+		})
+	}
+}
+
 // A long status or a narrow terminal must not hide the controls. The status is
 // shortened first, then the hint wording; the full hints stay whenever they
 // fit, and both spellings always include the quit and browser keys.
