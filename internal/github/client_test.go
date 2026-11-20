@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -239,5 +240,76 @@ func TestPageIsolationAndRedirect(t *testing.T) {
 	cancel()
 	if _, err := c.ListPage(ctx, "/cancelled"); err == nil {
 		t.Fatal("cancelled request succeeded")
+	}
+}
+
+// The pure parser is checked against a fixed clock so rounding and the past
+// date floor are exact, independent of when the test happens to run.
+func TestRetryAfterWait(t *testing.T) {
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, header string
+		now          time.Time
+		want         time.Duration
+		wantOK       bool
+	}{
+		{"seconds", "120", now, 2 * time.Minute, true},
+		{"future HTTP date", now.Add(2 * time.Minute).UTC().Format(http.TimeFormat), now, 2 * time.Minute, true},
+		{"past HTTP date", now.Add(-90 * time.Second).UTC().Format(http.TimeFormat), now, 0, true},
+		{"rounds to a second", now.Add(2 * time.Second).UTC().Format(http.TimeFormat), now.Add(400 * time.Millisecond), 2 * time.Second, true},
+		{"invalid", "tomorrow", now, 0, false},
+		{"empty", "", now, 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := retryAfterWait(tt.header, tt.now)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("retryAfterWait(%q) = %s, %t; want %s, %t", tt.header, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestRateLimitResponseError(t *testing.T) {
+	const prefix = "GitHub rate limited; retry after "
+	for _, tt := range []struct {
+		name, want string
+		status     int
+		header     func(time.Time) string
+		wantWait   time.Duration // when set, accept this wait within a second
+	}{
+		{"seconds", prefix + "2m0s", 429, func(time.Time) string { return "120" }, 0},
+		{"future HTTP date", "", 429,
+			func(now time.Time) string { return now.Add(2 * time.Minute).Format(http.TimeFormat) }, 2 * time.Minute},
+		{"past HTTP date", prefix + "0s", 403,
+			func(now time.Time) string { return now.Add(-time.Hour).Format(http.TimeFormat) }, 0},
+		{"malformed", "GitHub REST returned HTTP 429", 429, func(time.Time) string { return "tomorrow" }, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				StatusCode: tt.status,
+				Header: http.Header{
+					"Retry-After":           {tt.header(time.Now().UTC())},
+					"X-RateLimit-Remaining": {"412"}, // secondary limit, not the primary one
+				},
+				Body: io.NopCloser(strings.NewReader("secret body for test-token")),
+			}
+			got := responseError(resp, "REST").Error()
+			if tt.wantWait != 0 {
+				// HTTP dates carry whole seconds, so the live clock can round
+				// one second down; the pure parser test checks exact rounding.
+				if !strings.HasPrefix(got, prefix) {
+					t.Fatalf("error %q, want prefix %q", got, prefix)
+				}
+				wait, err := time.ParseDuration(strings.TrimPrefix(got, prefix))
+				if err != nil || wait < tt.wantWait-time.Second || wait > tt.wantWait+time.Second {
+					t.Fatalf("error %q, want about %s", got, tt.wantWait)
+				}
+			} else if got != tt.want {
+				t.Fatalf("error %q, want %q", got, tt.want)
+			}
+			if strings.Contains(got, "secret") || strings.Contains(got, "test-token") {
+				t.Fatalf("body or token leaked into error: %q", got)
+			}
+		})
 	}
 }

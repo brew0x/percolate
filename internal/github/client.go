@@ -142,11 +142,38 @@ func responseError(resp *http.Response, kind string) error {
 			}
 			return errors.New("GitHub rate limit exhausted")
 		}
-		if retry, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && retry > 0 {
-			return fmt.Errorf("GitHub rate limited; retry after %s", (time.Duration(retry) * time.Second).Round(time.Second))
+		if wait, ok := retryAfterWait(resp.Header.Get("Retry-After"), time.Now()); ok {
+			return fmt.Errorf("GitHub rate limited; retry after %s", wait)
 		}
 	}
 	return fmt.Errorf("GitHub %s returned HTTP %d", kind, resp.StatusCode)
+}
+
+// retryAfterWait parses a Retry-After header in either form GitHub sends:
+// delta-seconds or an HTTP date (used by secondary rate limits). The wait is
+// rounded to a second and floored at zero, so a date already past never yields
+// a negative duration. Missing, malformed or absurd values are not actionable.
+func retryAfterWait(header string, now time.Time) (time.Duration, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
+		const maxSeconds = int64(1<<63-1) / int64(time.Second)
+		if seconds < 0 || seconds > maxSeconds {
+			return 0, false
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	date, err := http.ParseTime(header)
+	if err != nil {
+		return 0, false
+	}
+	wait := date.Sub(now).Round(time.Second)
+	if wait < 0 {
+		wait = 0
+	}
+	return wait, true
 }
 
 // ListPage returns JSON from a relative REST path, including its query. Repeat
