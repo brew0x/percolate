@@ -7,30 +7,37 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveToken(t *testing.T) {
 	for _, tt := range []struct {
-		name, env, output string
-		fail, wantHelper  bool
-		want              string
+		name, env, base, output string
+		fail, wantHelper        bool
+		wantHost, want          string
 	}{
-		{"environment", " env-token\n", "", false, false, "env-token"},
-		{"helper", " \n", "helper-token\n", false, true, "helper-token"},
-		{"missing", "", "", true, true, ""},
-		{"empty helper", "", " \n", false, true, ""},
+		{"environment", " env-token\n", "https://github.example.com", "", false, false, "", "env-token"},
+		{"default host", " \n", "", "helper-token\n", false, true, "github.com", "helper-token"},
+		{"default api host", " \n", "https://api.github.com/", "helper-token\n", false, true, "github.com", "helper-token"},
+		{"enterprise host", " \n", "https://github.example.com", "helper-token\n", false, true, "github.example.com", "helper-token"},
+		{"enterprise host with api path", " \n", "https://ghe.example.com/api/v3", "helper-token\n", false, true, "ghe.example.com", "helper-token"},
+		{"helper failure", "", "https://github.example.com", "", true, true, "github.example.com", ""},
+		{"empty helper", "", "", " \n", false, true, "github.com", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			token, err := resolveToken(context.Background(), tt.env, func(context.Context) ([]byte, error) {
-				called = true
-				if tt.fail {
-					return nil, errors.New("sensitive helper output")
-				}
-				return []byte(tt.output), nil
-			})
-			if token != tt.want || called != tt.wantHelper {
-				t.Fatalf("unexpected token resolution")
+			gotHost := ""
+			token, err := resolveToken(context.Background(), tt.env, tt.base,
+				func(_ context.Context, hostname string) ([]byte, error) {
+					called = true
+					gotHost = hostname
+					if tt.fail {
+						return nil, errors.New("sensitive helper output")
+					}
+					return []byte(tt.output), nil
+				})
+			if token != tt.want || called != tt.wantHelper || gotHost != tt.wantHost {
+				t.Fatalf("token %q, helper called %t for host %q", token, called, gotHost)
 			}
 			if tt.want == "" && !errors.Is(err, ErrNoToken) {
 				t.Fatalf("error: %v", err)
@@ -38,7 +45,51 @@ func TestResolveToken(t *testing.T) {
 			if tt.want != "" && err != nil {
 				t.Fatal(err)
 			}
+			if err != nil && (strings.Contains(err.Error(), "sensitive") || strings.Contains(err.Error(), "helper-token")) {
+				t.Fatalf("helper output leaked into error: %v", err)
+			}
 		})
+	}
+}
+
+// The credential helper keeps its five-second deadline, independent of any
+// deadline on the caller's context. No helper output is persisted.
+func TestResolveTokenHelperDeadline(t *testing.T) {
+	_, err := resolveToken(context.Background(), "", "https://github.example.com",
+		func(ctx context.Context, hostname string) ([]byte, error) {
+			if hostname != "github.example.com" {
+				t.Fatalf("helper host %q", hostname)
+			}
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatal("helper has no deadline")
+			}
+			if remaining := time.Until(deadline); remaining <= 3*time.Second || remaining > 5*time.Second {
+				t.Fatalf("helper deadline in %s, want about 5s", remaining)
+			}
+			return nil, errors.New("sensitive helper output")
+		})
+	if !errors.Is(err, ErrNoToken) || strings.Contains(err.Error(), "sensitive") {
+		t.Fatalf("unsafe or missing error: %v", err)
+	}
+}
+
+func TestTokenHostname(t *testing.T) {
+	for _, tt := range []struct{ base, want string }{
+		{"", "github.com"},
+		{"  ", "github.com"},
+		{"https://api.github.com", "github.com"},
+		{"https://API.GITHUB.COM/api/v3", "github.com"},
+		{"https://github.example.com", "github.example.com"},
+		{"https://ghe.example.com/api/v3", "ghe.example.com"},
+		{"https://github.example.com:8443", "github.example.com:8443"},
+		{"https://user:secret@github.example.com", "github.com"},
+		{"https://", "github.com"},
+		{"not a url", "github.com"},
+	} {
+		if got := tokenHostname(tt.base); got != tt.want {
+			t.Errorf("tokenHostname(%q) = %q, want %q", tt.base, got, tt.want)
+		}
 	}
 }
 
