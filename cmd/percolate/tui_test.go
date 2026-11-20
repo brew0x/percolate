@@ -584,19 +584,22 @@ func TestTUIViewGolden(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
 		width, height int
+		failure       string
 	}{
-		{"normal", 100, 30},
-		{"short", 60, 8},
+		{"normal", 100, 30, ""},
+		{"short", 60, 8, ""},
+		{"refresh-failed", 60, 8, "GitHub rate limit exhausted; resets in 3h20m0s"},
 	} {
 		m := base
 		m.width, m.height = tt.width, tt.height
+		m.refreshErr = tt.failure
 		got := plainView(m)
 		if lines := strings.Count(got, "\n") + 1; lines > tt.height {
 			t.Fatalf("%s view has %d lines for %d rows", tt.name, lines, tt.height)
 		}
 		for _, want := range []string{
 			"https://github.com/acme/widgets/commit/",
-			"tab / arrows / mouse  ·  enter details  ·  o browser  ·  q",
+			keyHints,
 		} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("%s view lost %q:\n%s", tt.name, want, got)

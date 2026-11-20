@@ -77,7 +77,8 @@ Usage:
   percolate owner/repo [--record snapshot.json]
   percolate --fixture snapshot.json
   percolate render --fixture snapshot.json --frame 7 --size 100x30 [--color=false]
-  percolate version
+  percolate version, percolate --version, percolate -v
+  percolate help, percolate --help, percolate -h
 
 Flags:
 `
@@ -134,7 +135,7 @@ func run(args []string, out, errout io.Writer) int {
 	var flagOut bytes.Buffer
 	fs := flagSet(&flagOut)
 	o := defineFlags(fs)
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := fs.Parse(reorderArgs(args, fs)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printHelp(out)
 			return 0
@@ -224,16 +225,27 @@ func parseSize(s string) (int, int, error) {
 // usageError marks mistakes in command-line shape, exiting 2 like flag.Parse.
 type usageError struct{ error }
 
-// valueFlags consume a following token, which lets reorderArgs tell flag
-// values apart from the owner/repo positional. Keep this in sync with the
-// flag set above.
-var valueFlags = map[string]bool{"fixture": true, "record": true, "size": true, "frame": true}
+// boolFlag is the unexported interface the flag package uses to tell boolean
+// flags apart from flags that consume a following token. Reporting which flags
+// take a value from the very set the parser reads keeps reorderArgs from
+// drifting when a flag is added or changed.
+type boolFlag interface{ IsBoolFlag() bool }
+
+func takesValue(f *flag.Flag) bool {
+	if f == nil {
+		return false
+	}
+	bf, ok := f.Value.(boolFlag)
+	return !ok || !bf.IsBoolFlag()
+}
 
 // reorderArgs moves non-flag tokens behind the flags, because flag.Parse
 // stops at the first one; `percolate owner/repo --record x` must work as
 // written, not only as `percolate --record x owner/repo`. Multiple positionals
-// keep their relative order at the end, where run() counts them.
-func reorderArgs(args []string) []string {
+// keep their relative order at the end, where run() counts them. The flags
+// that consume a token are read from fs, the same definition used by Parse and
+// by help, so a new flag cannot make a positional look like its value.
+func reorderArgs(args []string, fs *flag.FlagSet) []string {
 	var positional, rest []string
 	takeValue := false
 	for _, a := range args {
@@ -244,7 +256,7 @@ func reorderArgs(args []string) []string {
 		if strings.HasPrefix(a, "-") {
 			rest = append(rest, a)
 			name := strings.TrimLeft(a, "-")
-			if eq := strings.Index(name, "="); eq < 0 && valueFlags[name] {
+			if eq := strings.Index(name, "="); eq < 0 && takesValue(fs.Lookup(name)) {
 				takeValue = true
 			}
 			continue

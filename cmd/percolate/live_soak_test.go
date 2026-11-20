@@ -166,14 +166,14 @@ func TestLiveWatchTenPolls(t *testing.T) {
 			t.Fatalf("poll %d: live view stopped polling", poll)
 		}
 		if poll == 8 {
-			if msg.err == nil || !m.refreshFailed {
+			if msg.err == nil || m.refreshErr == "" {
 				t.Fatalf("poll %d: transient error was not noted", poll)
 			}
 			if !live.Equal(m.cur, before) {
 				t.Fatalf("poll %d: a failed read changed the scene", poll)
 			}
 		} else {
-			if msg.err != nil || m.refreshFailed {
+			if msg.err != nil || m.refreshErr != "" {
 				t.Fatalf("poll %d: unexpected error %v", poll, msg.err)
 			}
 			if m.transiting {

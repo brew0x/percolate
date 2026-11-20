@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -70,17 +71,26 @@ func TestFirstRunAnswers(t *testing.T) {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", arg, code, out.String(), errOut.String())
 		}
 	}
-	for _, arg := range []string{"help", "--help", "-h"} {
+	var shared string
+	for _, args := range [][]string{{"help"}, {"--help"}, {"-h"}, {"render", "-h"}} {
 		var out, errOut bytes.Buffer
-		if code := run([]string{arg}, &out, &errOut); code != 0 {
-			t.Fatalf("%s: exit %d", arg, code)
+		if code := run(args, &out, &errOut); code != 0 {
+			t.Fatalf("%v: exit %d", args, code)
 		}
 		if errOut.Len() != 0 || strings.Contains(out.String(), "\x1b") {
-			t.Fatalf("%s: help leaked to stderr or carried ANSI: %q / %q", arg, errOut.String(), out.String())
+			t.Fatalf("%v: help leaked to stderr or carried ANSI: %q / %q", args, errOut.String(), out.String())
 		}
-		for _, want := range []string{"Usage:", "percolate owner/repo", "percolate --fixture", "percolate render", "-fixture", "-record", "-frame", "-size", "-color", "tab or arrows"} {
+		if shared == "" {
+			shared = out.String()
+		} else if out.String() != shared {
+			t.Fatalf("%v: a help spelling printed a different usage", args)
+		}
+		// Help is where a first-time visitor learns the spellings that the
+		// previous release added; do not make them guess again by leaving
+		// only `percolate version` in the usage block.
+		for _, want := range []string{"Usage:", "percolate owner/repo", "percolate --fixture", "percolate render", "percolate version", "percolate --version", "percolate -v", "percolate help", "percolate --help", "percolate -h", "-fixture", "-record", "-frame", "-size", "-color", "tab or arrows"} {
 			if !strings.Contains(out.String(), want) {
-				t.Fatalf("%s: help missing %q:\n%s", arg, want, out.String())
+				t.Fatalf("%v: help missing %q:\n%s", args, want, out.String())
 			}
 		}
 	}
@@ -189,6 +199,8 @@ func TestRunDetailsListFailingJobs(t *testing.T) {
 }
 
 func TestReorderArgs(t *testing.T) {
+	fs := flagSet(io.Discard)
+	defineFlags(fs)
 	for _, tt := range []struct {
 		in, want []string
 	}{
@@ -197,7 +209,7 @@ func TestReorderArgs(t *testing.T) {
 		{[]string{"--fixture", "-x", "acme/widgets"}, []string{"--fixture", "-x", "acme/widgets"}},
 		{[]string{"acme/widgets"}, []string{"acme/widgets"}},
 	} {
-		got := reorderArgs(tt.in)
+		got := reorderArgs(tt.in, fs)
 		if len(got) != len(tt.want) {
 			t.Fatalf("reorder %v: %v", tt.in, got)
 		}
@@ -205,6 +217,25 @@ func TestReorderArgs(t *testing.T) {
 			if got[i] != tt.want[i] {
 				t.Fatalf("reorder %v: got %v", tt.in, got)
 			}
+		}
+	}
+}
+
+// The set of flags that consume a token comes from the parser's own FlagSet,
+// not a parallel list. Adding a value flag or a boolean flag must change
+// reorderArgs' behaviour without any other edit.
+func TestReorderArgsFollowsFlagSet(t *testing.T) {
+	fs := flag.NewFlagSet("extra", flag.ContinueOnError)
+	fs.String("token", "", "a value flag added later")
+	fs.Bool("switch", false, "a boolean flag added later")
+	got := reorderArgs([]string{"acme/widgets", "--token", "abc", "--switch"}, fs)
+	want := []string{"--token", "abc", "--switch", "acme/widgets"}
+	if len(got) != len(want) {
+		t.Fatalf("reorder: got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("reorder: got %v, want %v", got, want)
 		}
 	}
 }
@@ -584,7 +615,7 @@ func TestFailedRefreshKeepsScene(t *testing.T) {
 	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 60, height: 20}
 	updated, cmd := m.Update(snapshotMsg{err: errors.New("temporary failure")})
 	m = updated.(model)
-	if !m.refreshFailed || cmd == nil {
+	if m.refreshErr == "" || cmd == nil {
 		t.Fatal("failed refresh was not noted or retried")
 	}
 	if !strings.Contains(m.View().Content, "refresh failed") {
@@ -592,5 +623,67 @@ func TestFailedRefreshKeepsScene(t *testing.T) {
 	}
 	if !live.Equal(m.cur, prev) || m.transiting {
 		t.Fatal("failed refresh changed the scene")
+	}
+}
+
+// The footer names the reason a live read failed, so someone leaving a window
+// on a spare screen can tell a rate limit from an outage and report it. The
+// reason is the failed read's own one-line message, never a guess, and a later
+// success clears it. Server text cannot add rows or terminal instructions.
+func TestFailedRefreshShowsReasonAndClearsIt(t *testing.T) {
+	prev := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	m := model{s: scene.Build(prev), prev: prev, cur: prev, width: 100, height: 20}
+	updated, _ := m.Update(snapshotMsg{err: errors.New("GitHub rate limit exhausted\nresets in 3h20m0s")})
+	m = updated.(model)
+	key := strings.Join(m.footer(), "\n")
+	for _, want := range []string{"refresh failed:", "GitHub rate limit exhausted", "resets in 3h20m0s", "; retrying"} {
+		if !strings.Contains(key, want) {
+			t.Fatalf("failure reason lost %q: %q", want, key)
+		}
+	}
+	for _, row := range m.footer() {
+		if strings.ContainsAny(row, "\n\r\x1b") {
+			t.Fatalf("failure reason added a row or an escape: %q", row)
+		}
+	}
+
+	updated, _ = m.Update(snapshotMsg{snap: prev})
+	m = updated.(model)
+	if m.refreshErr != "" || strings.Contains(strings.Join(m.footer(), "\n"), "refresh failed") {
+		t.Fatalf("a successful poll kept a stale failure: %q", m.footer())
+	}
+}
+
+// A long status or a narrow terminal must not hide the controls. The status is
+// shortened first, then the hint wording; the full hints stay whenever they
+// fit, and both spellings always include the quit and browser keys.
+func TestFooterKeepsHintsAtNarrowWidth(t *testing.T) {
+	prev := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	for _, tt := range []struct {
+		name   string
+		width  int
+		reason string
+		notice string
+	}{
+		{"narrow with reason", 40, "GitHub rate limit exhausted; resets in 3h20m0s", ""},
+		{"very narrow with reason", 24, "GitHub rate limit exhausted; resets in 3h20m0s", ""},
+		{"long notice", 40, "", strings.Repeat("opened in browser and more", 3)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := model{s: scene.Build(prev), prev: prev, cur: prev, width: tt.width, height: 12, notice: tt.notice, refreshErr: tt.reason}
+			rows := m.footer()
+			key := strings.Join(rows, "\n")
+			for _, row := range rows {
+				if lipgloss.Width(row) > tt.width {
+					t.Fatalf("footer row is %d cells for %d columns: %q", lipgloss.Width(row), tt.width, row)
+				}
+			}
+			if !strings.HasSuffix(rows[len(rows)-1], "q") || !strings.Contains(key, "o") {
+				t.Fatalf("footer hid the browser or quit key: %q", key)
+			}
+			if strings.Contains(tt.reason, "rate limit") && tt.width >= 40 && !strings.Contains(key, "rate limit") {
+				t.Fatalf("footer hid the failure reason: %q", key)
+			}
+		})
 	}
 }

@@ -46,11 +46,14 @@ type model struct {
 	fetch                          live.Fetcher
 	web, slug                      string
 	transitionStart                int
-	transiting, refreshFailed      bool
+	transiting                     bool
 	frame, width, height, selected int
 	selectedID                     string
 	details                        bool
 	notice                         string
+	// refreshErr is the last failed live read's one-line reason. Empty means
+	// the last read succeeded; there is no separate flag that could disagree.
+	refreshErr string
 }
 
 // markIndex finds a mark by its recorded identity. A refresh can insert a
@@ -133,46 +136,89 @@ func (m model) selectedMark(s scene.Scene) (int, scene.Mark, bool) {
 	return selected, s.Marks[selected], true
 }
 
+// keyHints teaches a new visitor every action. The shorter spellings keep the
+// same actions reachable when the terminal itself is too narrow for the full
+// wording; the status never displaces them.
+const (
+	keyHints        = "tab / arrows / mouse  ·  enter details  ·  o browser  ·  q"
+	compactKeyHints = "tab/arrows  ·  enter  ·  o  ·  q"
+	tinyKeyHints    = "o q"
+)
+
+// failureReason is the failed read's own message, flattened to one printable
+// line. Repository or server text cannot add a footer row or a terminal
+// instruction, and a long reason cannot push the controls out of the frame.
+func failureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	return fit(clean(strings.TrimSpace(s)), 80)
+}
+
+// footerKey returns the status and hint rows below the landscape. A long
+// status gets its own row rather than eating the controls: the old single row
+// let one notice hide `o` and `q` exactly when someone needed them to inspect
+// or leave a live window during a failed poll.
+func (m model) footerKey() []string {
+	hint := keyHints
+	if lipgloss.Width(hint) > m.width {
+		hint = compactKeyHints
+	}
+	if lipgloss.Width(hint) > m.width {
+		hint = tinyKeyHints
+	}
+	hint = fit(clean(hint), m.width)
+	status := ""
+	if m.refreshErr != "" {
+		// A failure outranks a transient browser notice: both compete for the
+		// same row, and the reason is what someone needs to report it.
+		status = "refresh failed: " + m.refreshErr + "; retrying"
+	} else {
+		status = clean(m.notice)
+	}
+	if status == "" {
+		return []string{hint}
+	}
+	status = fit(status, m.width)
+	const sep = "  ·  "
+	if lipgloss.Width(status)+lipgloss.Width(sep)+lipgloss.Width(hint) <= m.width {
+		return []string{status + sep + hint}
+	}
+	return []string{status, hint}
+}
+
 // footer is the exact text below the landscape. It keeps the key hints last
 // and trims detail rows from the top when the terminal is short, so neither
 // the URL nor the controls fall below the visible area. The landscape gets
 // every remaining row; no other renderer can disagree with it.
 func (m model) footer() []string {
-	key := "tab / arrows / mouse  ·  enter details  ·  o browser  ·  q"
-	if m.notice != "" {
-		key = m.notice + "  ·  " + key
-	}
-	if m.refreshFailed {
-		key = "refresh failed; retrying  ·  " + key
-	}
-	// The hints and status share the last row; fit them once so a notice or a
-	// narrow window cannot wrap them into a row the height budget does not have.
-	key = fit(clean(key), m.width)
+	key := m.footerKey()
 	if !m.details {
-		return []string{key}
+		return key
 	}
 	s, _ := m.viewScene()
 	_, mark, ok := m.selectedMark(s)
 	if !ok {
-		return []string{key}
+		return key
 	}
 	detail := detailLines(m, mark)
-	lines := append(append([]string{}, detail...), "", key)
+	lines := append(append([]string{}, detail...), "")
+	lines = append(lines, key...)
 	budget := max(1, m.height)
 	if len(lines) <= budget {
 		return lines
 	}
-	// Drop the blank separator, then fields from the top and finally the
-	// header. The URL and the key hints survive whenever there is room.
-	lines = append(lines[:len(detail)], key)
-	urlAt := len(detail) - 1
-	for len(lines) > budget && urlAt > 1 {
-		lines = append(lines[:1], lines[2:]...)
-		urlAt--
-	}
-	for len(lines) > budget && urlAt > 0 {
+	// Drop the blank separator, then detail fields from the top. The recorded
+	// URL and the key rows survive whenever there is room for them.
+	lines = append(append([]string{}, detail...), key...)
+	for len(lines) > budget && len(lines) > len(key) {
 		lines = lines[1:]
-		urlAt--
 	}
 	if len(lines) > budget {
 		lines = lines[len(lines)-budget:]
@@ -215,11 +261,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.fetchCmd()
 	case snapshotMsg:
 		if v.err != nil {
-			// A failed refresh is a status note, never a fabricated scene.
-			m.refreshFailed = true
+			// A failed refresh is a status note with its own reason, never a
+			// fabricated scene and never a stale reason from an earlier poll.
+			m.refreshErr = failureReason(v.err)
 			return m, poll()
 		}
-		m.refreshFailed = false
+		m.refreshErr = ""
 		keep := m.selectionID()
 		if !live.Equal(m.cur, v.snap) {
 			m.prev, m.cur = m.cur, v.snap
