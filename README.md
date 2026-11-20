@@ -62,8 +62,10 @@ the latest [GitHub release](https://github.com/brew0x/percolate/releases),
 extract `percolate.exe` and put it on your `PATH`.
 
 Each `vX.Y.Z` tag attaches macOS, Linux and Windows archives to the GitHub
-release and updates the Homebrew tap; `percolate version` reports the tagged
-version. The text of a release is handwritten in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+release and updates the Homebrew tap. `percolate version` (or `percolate
+--version` / `percolate -v`) reports the installed version; `percolate help`
+lists the commands and keys. The text of a release is handwritten in
+[RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ## Usage
 
