@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"context"
@@ -51,50 +52,121 @@ func installedVersion() string {
 }
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
-func run(args []string, out, errout io.Writer) int {
-	if len(args) > 0 && args[0] == "version" {
+
+// A freshly installed binary is usually probed with one of these spellings.
+// They all answer the same honest version and the same usage, on stdout with
+// exit 0, rather than looking like an invalid repository or a flag error.
+func firstRun(args []string, out io.Writer) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "version", "--version", "-v":
 		fmt.Fprintln(out, "percolate "+installedVersion())
+	case "help", "--help", "-h":
+		printHelp(out)
+	default:
+		return false
+	}
+	return true
+}
+
+const helpIntro = `Percolate draws a repository's life as a terminal landscape.
+
+Usage:
+  percolate owner/repo [--record snapshot.json]
+  percolate --fixture snapshot.json
+  percolate render --fixture snapshot.json --frame 7 --size 100x30 [--color=false]
+  percolate version
+
+Flags:
+`
+
+const helpKeys = `
+In the live view: tab or arrows step through marks, enter opens details,
+o opens the GitHub page, and q quits.
+`
+
+// flagSet and defineFlags are the single definition of Percolate's flags,
+// shared by normal parsing and by help so the printed list cannot drift from
+// what the CLI reads.
+func flagSet(output io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet("percolate", flag.ContinueOnError)
+	fs.SetOutput(output)
+	return fs
+}
+
+type cliOptions struct {
+	fixture, record, size *string
+	frame                 *int
+	color                 *bool
+}
+
+func defineFlags(fs *flag.FlagSet) cliOptions {
+	return cliOptions{
+		fixture: fs.String("fixture", "", "recorded snapshot JSON to replay"),
+		record:  fs.String("record", "", "save a fetched snapshot to this JSON file for exact replay"),
+		frame:   fs.Int("frame", 0, "animation frame"),
+		size:    fs.String("size", "100x30", "terminal columns x rows"),
+		color:   fs.Bool("color", true, "ANSI colors"),
+	}
+}
+
+func printHelp(out io.Writer) {
+	fmt.Fprint(out, helpIntro)
+	fs := flagSet(out)
+	defineFlags(fs)
+	fs.PrintDefaults()
+	fmt.Fprint(out, helpKeys)
+}
+
+func run(args []string, out, errout io.Writer) int {
+	if firstRun(args, out) {
 		return 0
 	}
 	render := len(args) > 0 && args[0] == "render"
 	if render {
 		args = args[1:]
 	}
-	fs := flag.NewFlagSet("percolate", flag.ContinueOnError)
-	fs.SetOutput(errout)
-	fixture := fs.String("fixture", "", "recorded snapshot JSON to replay")
-	record := fs.String("record", "", "save a fetched snapshot to this JSON file for exact replay")
-	frame := fs.Int("frame", 0, "animation frame")
-	size := fs.String("size", "100x30", "terminal columns x rows")
-	colored := fs.Bool("color", true, "ANSI colors")
+	// Keep flag diagnostics on stderr; a -h anywhere (including after
+	// `render`) is a successful help request on stdout, not a usage error.
+	// The buffer swallows the flag package's own terse usage in that case.
+	var flagOut bytes.Buffer
+	fs := flagSet(&flagOut)
+	o := defineFlags(fs)
 	if err := fs.Parse(reorderArgs(args)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printHelp(out)
+			return 0
+		}
+		fmt.Fprint(errout, flagOut.String())
 		return 2
 	}
 	if fs.NArg() > 1 {
 		fmt.Fprintln(errout, "unexpected argument")
 		return 2
 	}
-	if *fixture != "" && fs.NArg() > 0 {
+	if *o.fixture != "" && fs.NArg() > 0 {
 		fmt.Fprintln(errout, "--fixture replays a recording; remove the repository argument")
 		return 2
 	}
-	if *record != "" && *fixture != "" {
+	if *o.record != "" && *o.fixture != "" {
 		fmt.Fprintln(errout, "use either --fixture to replay a recording, or owner/repo with --record")
 		return 2
 	}
-	if *fixture == "" && *record == "" && fs.NArg() == 0 {
+	if *o.fixture == "" && *o.record == "" && fs.NArg() == 0 {
 		fmt.Fprintln(errout, "Use percolate owner/repo to watch GitHub, or percolate --fixture snapshot.json to replay a recording.")
 		return 2
 	}
-	w, h, err := parseSize(*size)
+	w, h, err := parseSize(*o.size)
 	if err != nil {
 		fmt.Fprintln(errout, err)
 		return 2
 	}
 	var snapshot repo.Snapshot
 	var liveFetch live.Fetcher
-	if *fixture != "" {
-		data, err := os.ReadFile(*fixture)
+	if *o.fixture != "" {
+		data, err := os.ReadFile(*o.fixture)
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			return 1
@@ -105,7 +177,7 @@ func run(args []string, out, errout io.Writer) int {
 		}
 	} else {
 		var fetch live.Fetcher
-		snapshot, fetch, err = watch(context.Background(), *record, fs.Args())
+		snapshot, fetch, err = watch(context.Background(), *o.record, fs.Args())
 		if err != nil {
 			fmt.Fprintln(errout, err)
 			if errors.As(err, new(usageError)) {
@@ -121,7 +193,7 @@ func run(args []string, out, errout io.Writer) int {
 	}
 	s := scene.Build(snapshot)
 	if render {
-		fmt.Fprintln(out, paint(scene.Frame(s, *frame, w, h), *colored))
+		fmt.Fprintln(out, paint(scene.Frame(s, *o.frame, w, h), *o.color))
 		return 0
 	}
 	m := model{

@@ -31,7 +31,7 @@ func TestCLI(t *testing.T) {
 		args     []string
 		code     int
 		contains string
-	}{{"hint", nil, 2, "--fixture"}, {"version", []string{"version"}, 0, "0.1.0"}, {"render", []string{"render", "--fixture", "../../testdata/fixtures/small.json", "--frame", "7", "--size", "100x30", "--color=false"}, 0, "●"}, {"bad size", []string{"render", "--fixture", "x", "--size", "-1x2"}, 2, "size"}, {"fixture with repo", []string{"--fixture", "../../testdata/fixtures/small.json", "acme/widgets"}, 2, "remove the repository argument"}, {"missing", []string{"--fixture", "missing.json"}, 1, "missing.json"}} {
+	}{{"hint", nil, 2, "--fixture"}, {"version", []string{"version"}, 0, "0.1.0"}, {"long version flag", []string{"--version"}, 0, "0.1.0"}, {"short version flag", []string{"-v"}, 0, "0.1.0"}, {"help", []string{"help"}, 0, "Usage:"}, {"long help flag", []string{"--help"}, 0, "-fixture"}, {"render help flag", []string{"render", "-h"}, 0, "Percolate draws"}, {"render", []string{"render", "--fixture", "../../testdata/fixtures/small.json", "--frame", "7", "--size", "100x30", "--color=false"}, 0, "●"}, {"bad size", []string{"render", "--fixture", "x", "--size", "-1x2"}, 2, "size"}, {"fixture with repo", []string{"--fixture", "../../testdata/fixtures/small.json", "acme/widgets"}, 2, "remove the repository argument"}, {"missing", []string{"--fixture", "missing.json"}, 1, "missing.json"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, err bytes.Buffer
 			code := run(tt.args, &out, &err)
@@ -56,6 +56,33 @@ func TestCLI(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A newly installed binary is usually probed with --version/-v or help/-h.
+// Every spelling answers on stdout with exit 0, and the printed flag list is
+// the same definition the parser reads, so help cannot drift from the CLI.
+func TestFirstRunAnswers(t *testing.T) {
+	for _, arg := range []string{"version", "--version", "-v"} {
+		var out, errOut bytes.Buffer
+		code := run([]string{arg}, &out, &errOut)
+		if code != 0 || out.String() != "percolate "+fallbackVersion+"\n" || errOut.Len() != 0 {
+			t.Fatalf("%s: exit %d, stdout %q, stderr %q", arg, code, out.String(), errOut.String())
+		}
+	}
+	for _, arg := range []string{"help", "--help", "-h"} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{arg}, &out, &errOut); code != 0 {
+			t.Fatalf("%s: exit %d", arg, code)
+		}
+		if errOut.Len() != 0 || strings.Contains(out.String(), "\x1b") {
+			t.Fatalf("%s: help leaked to stderr or carried ANSI: %q / %q", arg, errOut.String(), out.String())
+		}
+		for _, want := range []string{"Usage:", "percolate owner/repo", "percolate --fixture", "percolate render", "-fixture", "-record", "-frame", "-size", "-color", "tab or arrows"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("%s: help missing %q:\n%s", arg, want, out.String())
+			}
+		}
 	}
 }
 
