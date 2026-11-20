@@ -101,11 +101,13 @@ the 32-frame transition, then holds exactly the new snapshot. Fixtures and
 A failed live read keeps the last scene and adds `refresh failed: <reason>;
 retrying` to the footer until a successful read clears it. The reason is the
 failed read's own message, flattened to one printable line; no outcome is
-guessed and no new mark is drawn. Status and key hints share one row when they
-fit; a long status takes its own row above the controls rather than pushing
-them off screen. The hints stay together and lose detail only in a narrow
-terminal, and the browser and quit keys survive whenever there is room for
-them.
+guessed and no new mark is drawn. When that full wording does not fit, the
+prefix and retry note are dropped before the reason is, so an actionable detail
+such as a rate-limit reset time stays readable. Status and key hints share one
+row when they fit; a long status takes its own row above the controls rather
+than pushing them off screen. The hints stay together and lose detail only in a
+narrow terminal, and the browser and quit keys survive whenever there is room
+for them.
 
 Lanes occupy only recorded commit paths, rather than full-height columns. A
 merged lane ends at its merge path; no merge is inferred from PR state. A newer

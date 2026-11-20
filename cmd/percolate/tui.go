@@ -161,6 +161,23 @@ func failureReason(err error) string {
 	return fit(clean(strings.TrimSpace(s)), 80)
 }
 
+// failureStatus builds the failed-read row. The reason is data; "refresh
+// failed" and the retry note are framing. On a narrow row the framing goes
+// first, so an actionable detail such as a rate-limit reset time survives
+// instead of being clipped off the end of the line.
+func failureStatus(reason string, width int) string {
+	for _, s := range []string{
+		"refresh failed: " + reason + "; retrying",
+		"failed: " + reason,
+		reason,
+	} {
+		if lipgloss.Width(s) <= width {
+			return s
+		}
+	}
+	return fit(reason, width)
+}
+
 // footerKey returns the status and hint rows below the landscape. A long
 // status gets its own row rather than eating the controls: the old single row
 // let one notice hide `o` and `q` exactly when someone needed them to inspect
@@ -178,14 +195,13 @@ func (m model) footerKey() []string {
 	if m.refreshErr != "" {
 		// A failure outranks a transient browser notice: both compete for the
 		// same row, and the reason is what someone needs to report it.
-		status = "refresh failed: " + m.refreshErr + "; retrying"
+		status = failureStatus(m.refreshErr, m.width)
 	} else {
-		status = clean(m.notice)
+		status = fit(clean(m.notice), m.width)
 	}
 	if status == "" {
 		return []string{hint}
 	}
-	status = fit(status, m.width)
 	const sep = "  ·  "
 	if lipgloss.Width(status)+lipgloss.Width(sep)+lipgloss.Width(hint) <= m.width {
 		return []string{status + sep + hint}
