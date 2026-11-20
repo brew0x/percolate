@@ -71,17 +71,26 @@ func TestFirstRunAnswers(t *testing.T) {
 			t.Fatalf("%s: exit %d, stdout %q, stderr %q", arg, code, out.String(), errOut.String())
 		}
 	}
-	for _, arg := range []string{"help", "--help", "-h"} {
+	var shared string
+	for _, args := range [][]string{{"help"}, {"--help"}, {"-h"}, {"render", "-h"}} {
 		var out, errOut bytes.Buffer
-		if code := run([]string{arg}, &out, &errOut); code != 0 {
-			t.Fatalf("%s: exit %d", arg, code)
+		if code := run(args, &out, &errOut); code != 0 {
+			t.Fatalf("%v: exit %d", args, code)
 		}
 		if errOut.Len() != 0 || strings.Contains(out.String(), "\x1b") {
-			t.Fatalf("%s: help leaked to stderr or carried ANSI: %q / %q", arg, errOut.String(), out.String())
+			t.Fatalf("%v: help leaked to stderr or carried ANSI: %q / %q", args, errOut.String(), out.String())
 		}
-		for _, want := range []string{"Usage:", "percolate owner/repo", "percolate --fixture", "percolate render", "-fixture", "-record", "-frame", "-size", "-color", "tab or arrows"} {
+		if shared == "" {
+			shared = out.String()
+		} else if out.String() != shared {
+			t.Fatalf("%v: a help spelling printed a different usage", args)
+		}
+		// Help is where a first-time visitor learns the spellings that the
+		// previous release added; do not make them guess again by leaving
+		// only `percolate version` in the usage block.
+		for _, want := range []string{"Usage:", "percolate owner/repo", "percolate --fixture", "percolate render", "percolate version", "percolate --version", "percolate -v", "percolate help", "percolate --help", "percolate -h", "-fixture", "-record", "-frame", "-size", "-color", "tab or arrows"} {
 			if !strings.Contains(out.String(), want) {
-				t.Fatalf("%s: help missing %q:\n%s", arg, want, out.String())
+				t.Fatalf("%v: help missing %q:\n%s", args, want, out.String())
 			}
 		}
 	}
@@ -190,6 +199,8 @@ func TestRunDetailsListFailingJobs(t *testing.T) {
 }
 
 func TestReorderArgs(t *testing.T) {
+	fs := flagSet(io.Discard)
+	defineFlags(fs)
 	for _, tt := range []struct {
 		in, want []string
 	}{
@@ -198,7 +209,7 @@ func TestReorderArgs(t *testing.T) {
 		{[]string{"--fixture", "-x", "acme/widgets"}, []string{"--fixture", "-x", "acme/widgets"}},
 		{[]string{"acme/widgets"}, []string{"acme/widgets"}},
 	} {
-		got := reorderArgs(tt.in)
+		got := reorderArgs(tt.in, fs)
 		if len(got) != len(tt.want) {
 			t.Fatalf("reorder %v: %v", tt.in, got)
 		}
@@ -206,6 +217,25 @@ func TestReorderArgs(t *testing.T) {
 			if got[i] != tt.want[i] {
 				t.Fatalf("reorder %v: got %v", tt.in, got)
 			}
+		}
+	}
+}
+
+// The set of flags that consume a token comes from the parser's own FlagSet,
+// not a parallel list. Adding a value flag or a boolean flag must change
+// reorderArgs' behaviour without any other edit.
+func TestReorderArgsFollowsFlagSet(t *testing.T) {
+	fs := flag.NewFlagSet("extra", flag.ContinueOnError)
+	fs.String("token", "", "a value flag added later")
+	fs.Bool("switch", false, "a boolean flag added later")
+	got := reorderArgs([]string{"acme/widgets", "--token", "abc", "--switch"}, fs)
+	want := []string{"--token", "abc", "--switch", "acme/widgets"}
+	if len(got) != len(want) {
+		t.Fatalf("reorder: got %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("reorder: got %v, want %v", got, want)
 		}
 	}
 }
