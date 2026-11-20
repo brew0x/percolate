@@ -33,18 +33,20 @@ func ResolveToken(ctx context.Context) (string, error) {
 }
 
 // tokenHostname maps the configured API base URL to the hostname gh stores
-// credentials under. The default api.github.com maps back to github.com so the
-// usual credential keeps working; any other host is used as given, without
-// path, query or userinfo.
+// credentials under. The default api.github.com, including an explicit :443,
+// maps back to github.com so the usual credential keeps working. Hostnames are
+// case-insensitive, so the result is lowercased; any other host keeps its port
+// but loses path, query and userinfo.
 func tokenHostname(base string) string {
 	u, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || u.Host == "" || u.User != nil {
 		return "github.com"
 	}
-	if strings.EqualFold(u.Host, "api.github.com") {
+	host := strings.ToLower(u.Hostname())
+	if host == "api.github.com" && (u.Port() == "" || u.Port() == "443") {
 		return "github.com"
 	}
-	return u.Host
+	return strings.ToLower(u.Host)
 }
 
 func resolveToken(ctx context.Context, env, base string, helper func(context.Context, string) ([]byte, error)) (string, error) {

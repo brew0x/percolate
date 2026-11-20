@@ -7,9 +7,10 @@ Credentials and cached responses are never written to disk.
 `ResolveToken(ctx)` prefers a nonempty `GITHUB_TOKEN`, then invokes
 `gh auth token --hostname <host>` with a five-second deadline. `<host>` comes
 from `PERCOLATE_GITHUB_URL` (default `github.com`; the default API host
-`api.github.com` also maps to `github.com`), so an Enterprise credential is
-found. Failure returns one actionable line. Neither helper output, helper
-errors nor tokens enter errors, and nothing is persisted.
+`api.github.com`, including an explicit `:443`, also maps to `github.com`).
+Hostnames are lowercased, so an Enterprise credential is found regardless of
+case. Failure returns one actionable line. Neither helper output, helper errors
+nor tokens enter errors, and nothing is persisted.
 
 `NewClient(token).ListPage(ctx, path)` requests one relative REST page on
 api.github.com. It keeps ETags and response JSON in memory, keys pages by the
