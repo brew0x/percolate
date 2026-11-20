@@ -88,6 +88,31 @@ func TestDetailPanelReportsRecordedFields(t *testing.T) {
 	}
 }
 
+// The visual-language doc is the promise about what each visible field means,
+// so its literal field labels must match the panel people actually read. The
+// resolved review state lives in its own `resolved` field, not in `reviews`
+// (which lists recorded reviewer: state pairs); keep the two in step.
+func TestVisualLanguageNamesResolvedReviewField(t *testing.T) {
+	snap := repo.Snapshot{PullRequests: []repo.PullRequest{{
+		Number: 7, Head: "topic", Base: "main", State: "open",
+		Reviews: []repo.Review{{Author: "sage", State: "approved"}},
+	}}}
+	m := uiModel(snap)
+	panel := panelText(m, markByID(t, m, "pr:7"))
+	if !strings.Contains(panel, "resolved") || !strings.Contains(panel, "approved") {
+		t.Fatalf("panel lost the resolved review field:\n%s", panel)
+	}
+	doc, err := os.ReadFile("../../docs/visual-language.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, word := range []string{"waiting", "approved", "changes requested"} {
+		if want := "`resolved: " + word + "`"; !strings.Contains(string(doc), want) {
+			t.Fatalf("visual-language doc does not name the panel's field label %q", want)
+		}
+	}
+}
+
 // A replay has no repository to link to, so the panel says so instead of
 // inventing a URL from a fixture name or a mark label.
 func TestDetailPanelReplayHasNoURL(t *testing.T) {

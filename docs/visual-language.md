@@ -119,7 +119,9 @@ artifacts says `artifacts not recorded` instead of an empty name, and a
 deployment without a recorded state leaves it blank. A release lists each
 recorded artifact name even when the bottom strip could not fit it. A run that records failing jobs names them in
 its details (`failing: test, lint`), matching the fail cells in its job strip. A pull request lists its recorded reviews and
-adds the resolved review state (`reviews: waiting`, `reviews: approved`,
-`reviews: changes requested`) — the same fact its convergence mark draws. A pull request shows at most the ten most
+adds the resolved review state under `resolved` (`resolved: waiting`,
+`resolved: approved`, `resolved: changes requested`) — the same fact its
+convergence mark draws. The `reviews` field above it holds the recorded
+`reviewer: state` list, not the resolved word. A pull request shows at most the ten most
 recent recorded reviews; older reviews are not present in the snapshot, so the
 list is never a claim about the full review history.
