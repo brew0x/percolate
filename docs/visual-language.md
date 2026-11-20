@@ -98,6 +98,13 @@ and only a recorded change between two snapshots animates: a live refresh draws
 the 32-frame transition, then holds exactly the new snapshot. Fixtures and
 `render` never animate a change — they draw one snapshot at the requested frame.
 
+A failed live read keeps the last scene and adds `refresh failed: <reason>;
+retrying` to the footer until a successful read clears it. The reason is the
+failed read's own message, flattened to one printable line; no outcome is
+guessed and no new mark is drawn. The key hints stay on the same row: a long
+status is shortened first, then the hints lose detail, but the browser and quit
+keys survive whenever the terminal has room for them.
+
 Lanes occupy only recorded commit paths, rather than full-height columns. A
 merged lane ends at its merge path; no merge is inferred from PR state. A newer
 commit after a merge keeps that lane active. Compressed rows may overlap paths;
