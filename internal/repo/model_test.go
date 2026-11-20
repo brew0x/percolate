@@ -9,6 +9,32 @@ import (
 // test package does not turn the golden target into a flag error.
 var _ = flag.Bool("update", false, "accepted for repository golden updates")
 
+func TestWorkflowRunStateHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		conclusion string
+		failed     bool
+	}{
+		{"success", false},
+		{"failure", true},
+		{"timed_out", true},
+		{"startup_failure", true},
+		{"cancelled", false},
+		{"skipped", false},
+		{"neutral", false},
+		{"", false},
+	} {
+		t.Run(tc.conclusion, func(t *testing.T) {
+			r := WorkflowRun{Status: "completed", Conclusion: tc.conclusion}
+			if got := r.Failed(); got != tc.failed {
+				t.Fatalf("Failed() = %v, want %v", got, tc.failed)
+			}
+			if got := FailedConclusion(tc.conclusion); got != tc.failed {
+				t.Fatalf("FailedConclusion(%q) = %v, want %v", tc.conclusion, got, tc.failed)
+			}
+		})
+	}
+}
+
 func TestJobStateHelpers(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

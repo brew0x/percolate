@@ -168,6 +168,40 @@ func TestJobStripSummarisesOversizedRun(t *testing.T) {
 	}
 }
 
+// A completed run with a neutral conclusion keeps the plain palette of its −
+// mark; it is neither a success nor a failure. Recorded jobs keep their own
+// palettes: success is green, cancelled is neutral, neither is red.
+func TestNeutralRunKeepsNeutralStyle(t *testing.T) {
+	s := runSnapshot([]repo.Job{
+		{Name: "build", Status: "completed", Conclusion: "success"},
+		{Name: "test", Status: "completed", Conclusion: "cancelled"},
+	})
+	s.Runs[0].Conclusion = "skipped"
+
+	mark := jobMark(s)
+	if mark.Glyph != '−' || mark.Style != scene.Plain {
+		t.Fatalf("neutral run mark = %q/%v, want −/Plain", mark.Glyph, mark.Style)
+	}
+	if got := mark.Jobs[0].Style; got != scene.Pass {
+		t.Fatalf("successful job style = %v, want Pass", got)
+	}
+	if got := mark.Jobs[1]; got.Glyph != '−' || got.Style != scene.Plain {
+		t.Fatalf("cancelled job = %q/%v, want −/Plain", got.Glyph, got.Style)
+	}
+
+	// A recorded job strip replaces the aggregate glyph in the frame, so the
+	// cells themselves must carry each job's own palette.
+	g := scene.Frame(scene.Build(s), 0, 60, 20)
+	for col, want := range []scene.Cell{
+		{Rune: '✓', Style: scene.Pass},
+		{Rune: '−', Style: scene.Plain},
+	} {
+		if got := g[4][5+col]; got != want {
+			t.Fatalf("cell %d = %q, want %q\n%s", col, got, want, g)
+		}
+	}
+}
+
 // A run with no recorded job list keeps its aggregate mark, and an explicitly
 // empty list also draws nothing beside it; details still distinguish the two.
 func TestRunWithoutJobsKeepsAggregateMark(t *testing.T) {
