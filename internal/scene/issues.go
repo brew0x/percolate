@@ -80,8 +80,10 @@ type issueView struct {
 // empty or that it wrote itself this frame, so commits, runs, recorded paths
 // and a dripping bead always win the shared shelf row (occlusion, not
 // aggregation); labels clear only cells the layer owns, so a shorter number
-// still erases a longer one without erasing recorded data. The selected spring
-// draws last so it stays inspectable.
+// still erases a longer one without erasing recorded data. A surviving spring
+// draws after every departing one, so the cell belongs to what stays: even a
+// selected departure cannot hide a survivor on the same head lane. Within each
+// layer the selected spring draws last so it stays inspectable.
 //
 // Closing references resolve by the pull request's snapshot rank. A fading
 // issue's rank came from the previous snapshot, so it resolves against every
@@ -196,13 +198,27 @@ func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 			}
 		}
 	}
+	// Four passes keep the documented layering: every fading spring draws
+	// before every surviving one, and selection only orders marks inside their
+	// own layer. A selected departure would otherwise be drawn after a
+	// surviving spring and hide the issue that is actually still open.
 	for _, m := range s.Marks {
-		if m.Kind == "issue" && m.ID != s.SelectedID {
+		if m.Kind == "issue" && m.Departing && m.ID != s.SelectedID {
 			drawOne(m)
 		}
 	}
 	for _, m := range s.Marks {
-		if m.Kind == "issue" && m.ID == s.SelectedID {
+		if m.Kind == "issue" && m.Departing && m.ID == s.SelectedID {
+			drawOne(m)
+		}
+	}
+	for _, m := range s.Marks {
+		if m.Kind == "issue" && !m.Departing && m.ID != s.SelectedID {
+			drawOne(m)
+		}
+	}
+	for _, m := range s.Marks {
+		if m.Kind == "issue" && !m.Departing && m.ID == s.SelectedID {
 			drawOne(m)
 		}
 	}
