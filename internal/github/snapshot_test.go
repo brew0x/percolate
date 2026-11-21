@@ -324,7 +324,8 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 		}
 		*graphqlCalls++
 		body, _ := io.ReadAll(r.Body)
-		follow := strings.Contains(string(body), "after:")
+		query := string(body)
+		follow := strings.Contains(query, "after:")
 		if mode == "follow-error" && follow {
 			_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
 			return
@@ -348,11 +349,37 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 		if more {
 			cursor = "next"
 		}
+		// A real GraphQL response carries only fields the query requests.
+		// The follow-up handler verifies the head oid before extending its
+		// parents, so the fake must omit oid when the query forgets to ask
+		// for it, or a regression there would pass unnoticed.
+		oidField := ""
+		if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
+			oidField = fmt.Sprintf(`"oid":"%s",`, sha(1001))
+		}
 		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,`+
 			`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}},`+
-			`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},`+
+			`"headRef":{"target":{%s"committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},`+
 			`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}}}}}}}}`,
-			strings.Join(reviews, ","), more, cursor, sha(1001), strings.Join(parents, ","), more, cursor)
+			strings.Join(reviews, ","), more, cursor, oidField, strings.Join(parents, ","), more, cursor)
+	}
+}
+
+// A follow-up page asks only for the connections that reported another page,
+// but it still needs the head commit's oid: the join verifies that the second
+// page describes the same commit as the first. This states the query contract
+// that the field-aware fakes below enforce by returning only requested fields.
+func TestPullDetailQueryFollowUpAsksForHeadOID(t *testing.T) {
+	prs := []repo.PullRequest{{Number: 7, Head: "flow"}}
+	follow := pullDetailQuery(prs, []detailCursor{{
+		review: "reviews-cursor", needReview: true,
+		parent: "parents-cursor", needParent: true,
+	}})
+	if !strings.Contains(follow, "target{oid") || !strings.Contains(follow, "Commit{oid") {
+		t.Fatalf("follow-up omitted the head oid: %s", follow)
+	}
+	if !strings.Contains(follow, `after:"parents-cursor"`) {
+		t.Fatalf("follow-up omitted the parent cursor: %s", follow)
 	}
 }
 

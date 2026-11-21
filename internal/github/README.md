@@ -54,12 +54,15 @@ list and its detail query keeps its lane but gains no reviews.
 
 Each PR detail reads the whole review history and the head commit's parent
 list through GraphQL connections in 100-item pages, oldest first, with at most
-one follow-up page per batch. The snapshot states the complete lists it read,
-up to 200 reviews and 200 parents per PR; a connection with a third page fails
-the whole read rather than being truncated into a plausible-looking history.
-The same bound covers the cursor-less page case: a promised next page with no
-cursor is an error. The result is a point-in-time view: objects can change
-between pages, and list ETags only deduplicate identical repeat reads.
+one follow-up page per batch. The follow-up asks for the head commit's `oid` as
+well as the next parent page, so the join can verify that both pages describe
+the same commit; a follow-up that loses that identity fails the whole read.
+The snapshot states the complete lists it read, up to 200 reviews and 200
+parents per PR; a connection with a third page fails the whole read rather than
+being truncated into a plausible-looking history. The same bound covers the
+cursor-less page case: a promised next page with no cursor is an error. The
+result is a point-in-time view: objects can change between pages, and list
+ETags only deduplicate identical repeat reads.
 
 A fork pull request's head lane uses GitHub's fork-qualified `head.label` (for
 example `alice:main`) when its head repository differs from the one being read;

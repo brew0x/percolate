@@ -450,7 +450,12 @@ func pullDetailQuery(chunk []repo.PullRequest, cursors []detailCursor) string {
 					pullDetailPageSize, graphqlString(cursors[i].review))
 			}
 			if cursors[i].needParent {
-				fmt.Fprintf(&q, "headRef{target{... on Commit{parents(first:%d,after:%s){nodes{oid} pageInfo{hasNextPage endCursor}}}}}",
+				// oid is requested on both the GitObject target and the Commit
+				// fragment: the follow-up handler verifies that this is still
+				// the head commit seen on the first page before extending its
+				// parents, and a real GraphQL response only carries fields the
+				// query asked for.
+				fmt.Fprintf(&q, "headRef{target{oid ... on Commit{oid parents(first:%d,after:%s){nodes{oid} pageInfo{hasNextPage endCursor}}}}}",
 					pullDetailPageSize, graphqlString(cursors[i].parent))
 			}
 		} else {

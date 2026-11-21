@@ -297,13 +297,14 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			fmt.Fprint(w, fmt.Sprintf(`[{"id":9,"sha":"%s","environment":"prod"}]`, sha(3)))
 		case "/graphql":
 			body, _ := io.ReadAll(r.Body)
-			if !strings.Contains(string(body), "pullRequest(number:1)") {
+			query := string(body)
+			if !strings.Contains(query, "pullRequest(number:1)") {
 				t.Errorf("unexpected GraphQL query: %s", body)
 			}
 			// This one PR's GraphQL response exceeds the old 10-review and
 			// three-parent caps: the first page needs a follow-up for both
 			// connections, so a recording must join the pages to stay complete.
-			follow := strings.Contains(string(body), "after:")
+			follow := strings.Contains(query, "after:")
 			first, last, parentFirst, parentLast := 0, 99, 0, 3
 			if follow {
 				first, last, parentFirst, parentLast = 100, 102, 4, 5
@@ -316,11 +317,18 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 				parents = append(parents, fmt.Sprintf(`{"oid":"%s"}`, sha(2000+i)))
 			}
 			more := !follow
+			// Real GraphQL returns only requested fields. The follow-up
+			// verifies the head oid before joining parents, so omit it when
+			// the query did not ask for it: a query regression must fail here.
+			oidField := ""
+			if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
+				oidField = fmt.Sprintf(`"oid":"%s",`, sha(4))
+			}
 			fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
 				`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}},`+
-				`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
+				`"headRef":{"target":{%s"committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
 				`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}}}`,
-				sha(4), strings.Join(reviews, ","), more, sha(4), strings.Join(parents, ","), more)
+				sha(4), strings.Join(reviews, ","), more, oidField, strings.Join(parents, ","), more)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -464,6 +472,104 @@ func TestRecordedPublicFixtureProvenance(t *testing.T) {
 	if actual != string(documented[1]) {
 		t.Fatalf("public recording changed: documented SHA-256 %s, file hashes to %s",
 			documented[1], actual)
+	}
+}
+
+// The second public recording covers the pull-detail pagination finding in #19:
+// one real PR with more than ten reviews and another real PR whose head commit
+// has more than three parents. Checking the shape first keeps the replay from
+// silently passing on a fixture that lost those properties.
+func TestRecordedPullDetailsFixtureReplaysToGolden(t *testing.T) {
+	const fixturePath = "../../testdata/fixtures/recorded-pull-details.json"
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.PullRequests) != 2 {
+		t.Fatalf("recording has %d PRs, want the two public cases", len(snap.PullRequests))
+	}
+	byNumber := make(map[int]repo.PullRequest, len(snap.PullRequests))
+	for _, pr := range snap.PullRequests {
+		byNumber[pr.Number] = pr
+	}
+	long, ok := byNumber[8301]
+	if !ok || len(long.Reviews) <= 10 || long.Reviews[0].Author != "jfehrle" ||
+		long.Reviews[len(long.Reviews)-1].Author != "Zimmi48" ||
+		long.Reviews[len(long.Reviews)-1].State != "approved" {
+		t.Fatalf("PR 8301 lost its long review history: %+v", long)
+	}
+	octopus, ok := byNumber[11914]
+	if !ok || octopus.Head != "Zimmi48:split-gallina-ext" {
+		t.Fatalf("PR 11914 lost its head lane: %+v", octopus)
+	}
+	const headSHA = "cf978356dd0791cf6b4bc90dcc07a91cd57bd79e"
+	var head repo.Commit
+	found := false
+	for _, cm := range snap.Commits {
+		if cm.SHA == headSHA {
+			head, found = cm, true
+		}
+	}
+	if !found || head.Branch != octopus.Head || len(head.Parents) <= 3 ||
+		head.Parents[0] != "ce6ad8544fe4bd6b5cf83d38424cd7877ff226cc" ||
+		head.Parents[len(head.Parents)-1] != "545f2a76e84cea2d9bfecc62ff417e97b3652bd2" {
+		t.Fatalf("PR 11914 head lost its five parents: %+v", head)
+	}
+
+	for _, frame := range []int{0, 7, 30} {
+		t.Run(fmt.Sprintf("frame%02d", frame), func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			args := []string{"render", "--fixture", fixturePath,
+				"--frame", fmt.Sprintf("%d", frame), "--size", "100x30", "--color=false"}
+			if code := run(args, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+			golden, err := os.ReadFile(fmt.Sprintf("../../testdata/golden/recorded-pull-details-100x30-%02d.txt", frame))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != string(golden) {
+				t.Fatalf("replay differs from golden frame %d:\n got:\n%s\nwant:\n%s", frame, out.String(), golden)
+			}
+			if strings.Contains(out.String(), "\x1b") {
+				t.Fatal("replay rendered ANSI sequences with --color=false")
+			}
+		})
+	}
+}
+
+// The public pull-detail recording's SHA-256 is parsed from its own README
+// section, so a stale note or an edited fixture fails here without making the
+// earlier public recording's provenance ambiguous.
+func TestRecordedPullDetailsFixtureProvenance(t *testing.T) {
+	const (
+		fixturePath = "../../testdata/fixtures/recorded-pull-details.json"
+		readmePath  = "../../testdata/fixtures/README.md"
+	)
+
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := regexp.MustCompile("(?ms)^## `recorded-pull-details\\.json`.*?^- \\*\\*SHA-256:\\*\\*\\s+`([0-9a-f]{64})`").
+		FindSubmatch(readme)
+	if section == nil {
+		t.Fatal("README has no documented SHA-256 for the pull-detail recording")
+	}
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(data))
+	if actual != string(section[1]) {
+		t.Fatalf("pull-detail recording changed: documented SHA-256 %s, file hashes to %s",
+			section[1], actual)
 	}
 }
 

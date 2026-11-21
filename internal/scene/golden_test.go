@@ -32,7 +32,10 @@ func fixture(t testing.TB, name string) repo.Snapshot {
 func TestGolden(t *testing.T) {
 	// recorded-hivemq is a real public repository recording (see
 	// testdata/fixtures/README.md); its frames are the replay proof for #3.
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq"} {
+	// recorded-pull-details is a focused public recording whose PRs exercise
+	// a long review history and an octopus head commit; its frames are the
+	// replay proof for the pull-detail pagination work in #19.
+	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details"} {
 		// 60x7 is a supported compact frame: its shelf shares the PR row, so
 		// these frames review that the spring lifts clear of the diamond.
 		for _, size := range [][2]int{{100, 30}, {60, 20}, {60, 7}} {
@@ -76,7 +79,7 @@ func TestBusyReplayShowsEveryReviewMark(t *testing.T) {
 	}
 }
 func TestDeterminism(t *testing.T) {
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq"} {
+	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details"} {
 		s := fixture(t, name)
 		before, _ := json.Marshal(s)
 		a := scene.Frame(scene.Build(s), 7, 100, 30)
