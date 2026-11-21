@@ -573,7 +573,8 @@ func TestRecordedPullDetailsFixtureProvenance(t *testing.T) {
 	}
 }
 
-// The open-pull-request recording is the #21 replay proof: it must carry one
+// The open-pull-request recording is the replay-path proof for the fields #21
+// needs (not the live GraphQL proof, which requires a token): it must carry one
 // real open PR with a named reviewer state and a head commit anchored on the
 // fork lane, and its CLI frames must match the reviewed goldens byte for byte.
 func TestRecordedOpenPRFixtureReplaysToGolden(t *testing.T) {
