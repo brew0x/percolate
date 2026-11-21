@@ -638,6 +638,8 @@ func TestRecordedOpenPRFixtureReplaysToGolden(t *testing.T) {
 
 // The open-PR recording's SHA-256 lives in its own README section, so editing
 // it without updating provenance fails here without touching other recordings.
+// The same check keeps its honest REST-derived method in place: the missing
+// authenticated GraphQL capture must never be implied by relabelling this file.
 func TestRecordedOpenPRFixtureProvenance(t *testing.T) {
 	const (
 		fixturePath = "../../testdata/fixtures/recorded-open-pr.json"
@@ -661,6 +663,13 @@ func TestRecordedOpenPRFixtureProvenance(t *testing.T) {
 	actual := fmt.Sprintf("%x", sha256.Sum256(data))
 	if actual != string(section[1]) {
 		t.Fatalf("open-PR recording changed: documented SHA-256 %s, file hashes to %s", section[1], actual)
+	}
+
+	record := string(section[0])
+	restMethod := regexp.MustCompile(`(?s)\*\*Method:\*\*.*?unauthenticated REST`).MatchString(record)
+	graphqlCaveat := regexp.MustCompile(`(?s)\*\*GraphQL caveat:\*\*.*?does \*\*not\*\* come from an authenticated\s+GraphQL call`).MatchString(record)
+	if !restMethod || !graphqlCaveat {
+		t.Fatal("open-PR provenance must keep saying it is REST-derived and not a GraphQL capture")
 	}
 }
 
