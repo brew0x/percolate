@@ -35,7 +35,9 @@ func TestGolden(t *testing.T) {
 	// recorded-pull-details is a focused public recording whose PRs exercise
 	// a long review history and an octopus head commit; its frames are the
 	// replay proof for the pull-detail pagination work in #19.
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details"} {
+	// recorded-open-pr carries a real open PR with a review and a head-commit
+	// anchor, the replay proof for the detail fields checked in #21.
+	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details", "recorded-open-pr"} {
 		// 60x7 is a supported compact frame: its shelf shares the PR row, so
 		// these frames review that the spring lifts clear of the diamond.
 		for _, size := range [][2]int{{100, 30}, {60, 20}, {60, 7}} {
@@ -79,7 +81,7 @@ func TestBusyReplayShowsEveryReviewMark(t *testing.T) {
 	}
 }
 func TestDeterminism(t *testing.T) {
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details"} {
+	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details", "recorded-open-pr"} {
 		s := fixture(t, name)
 		before, _ := json.Marshal(s)
 		a := scene.Frame(scene.Build(s), 7, 100, 30)
