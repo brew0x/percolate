@@ -518,3 +518,85 @@ func TestLinkedSpringDoesNotErasePRInCompactFrame(t *testing.T) {
 		})
 	}
 }
+
+// When one linked issue closes and a different one opens on the same pull
+// request head lane, the surviving spring owns the shared shelf cell for the
+// whole fade. Selection may not invert the layering: an issue on its way out
+// must never hide the one that is still open, whichever one is selected.
+func TestSurvivingSpringOwnsSharedShelfDuringFade(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{
+		Now:          day,
+		Branches:     []repo.Branch{{Name: "main"}, {Name: "topic"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 5, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	next := prev
+	next.Now = day.Add(time.Minute)
+	next.Issues = []repo.Issue{{Number: 7, Title: "polish", State: "open", ClosedBy: 12}}
+
+	const width, height = 100, 30
+	topicX := 3 + (width-4)/2 // two even lanes at this width
+	for _, tc := range []struct {
+		name, selected string
+	}{
+		{"unselected", ""},
+		{"survivor selected", "issue:7"},
+		{"departing selected", "issue:5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, frame := range []int{0, 8, 16, 24, 31, scene.TransitionFrames} {
+				s := scene.Transition(prev, next, frame)
+				s.SelectedID = tc.selected
+				g := scene.Frame(s, frame, width, height)
+				if g[3][topicX].Rune != '∿' || g[3][topicX+1].Rune != '#' || g[3][topicX+2].Rune != '7' {
+					t.Fatalf("frame %d: shelf does not show the surviving spring:\n%s", frame, g)
+				}
+				want := scene.Faded
+				if frame >= scene.TransitionFrames/2 {
+					want = scene.Fresh
+				}
+				if tc.selected == "issue:7" {
+					want = scene.Selected
+				}
+				if got := g[3][topicX].Style; got != want {
+					t.Fatalf("frame %d: spring style %v, want %v:\n%s", frame, got, want, g)
+				}
+				if got := g[3][topicX+3].Rune; got != ' ' {
+					t.Fatalf("frame %d: phantom digit %q beside #7:\n%s", frame, got, g)
+				}
+			}
+		})
+	}
+}
+
+// The same replacement with a longer departing number must not leave its
+// trailing digits behind when the shorter surviving number takes the cell.
+func TestFadingSpringClearsLongerLabelForSurvivor(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{
+		Now:          day,
+		Branches:     []repo.Branch{{Name: "main"}, {Name: "topic"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 100, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	next := prev
+	next.Now = day.Add(time.Minute)
+	next.Issues = []repo.Issue{{Number: 7, Title: "polish", State: "open", ClosedBy: 12}}
+
+	const width, height = 100, 30
+	topicX := 3 + (width-4)/2
+	for _, selected := range []string{"", "issue:100", "issue:7"} {
+		s := scene.Transition(prev, next, 8)
+		s.SelectedID = selected
+		g := scene.Frame(s, 8, width, height)
+		if g[3][topicX].Rune != '∿' || g[3][topicX+1].Rune != '#' || g[3][topicX+2].Rune != '7' {
+			t.Fatalf("selected %q: shelf does not show the surviving #7:\n%s", selected, g)
+		}
+		for xx := topicX + 3; xx <= topicX+26; xx++ {
+			if got := g[3][xx].Rune; got != ' ' {
+				t.Fatalf("selected %q: phantom digit %q after #7", selected, got)
+			}
+		}
+	}
+}
