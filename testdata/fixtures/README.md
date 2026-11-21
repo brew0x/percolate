@@ -87,3 +87,12 @@ request 2 survives and moves into rank 0 while issue 5 stays linked to it. The
 pair pins the survivor's feed running down its own lane to pr 2's diamond, and
 the departed PR fading on its retained lane without attracting any feed.
 Fiction derived from a checked-in fixture; no private data.
+
+## `feed-fade.json`, `feed-fade-next.json` — fictional fading-issue handoff
+
+The same fictional handoff as the `feed` pair, with issue 5 (linked to the
+surviving pr 2) removed from the new snapshot. Issue 5's rank comes from the old
+snapshot, where pr 2 held rank 1, so the pair pins its feed staying with the
+named PR after that PR moves into rank 0. Reviewed transition frames are
+`testdata/golden/feed-fade-*`. Fiction derived from a checked-in fixture; no
+private data.
