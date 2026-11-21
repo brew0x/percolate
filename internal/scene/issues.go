@@ -82,10 +82,11 @@ type issueView struct {
 // still erases a longer one without erasing recorded data. The selected spring
 // draws last so it stays inspectable.
 //
-// Closing references resolve by the pull request's snapshot rank. Pull
-// requests that are departing — present in the previous snapshot only — answer
-// only their own fading issues; a departed PR must never satisfy the lookup
-// for a surviving issue that moved into its rank.
+// Closing references resolve by the pull request's snapshot rank. A fading
+// issue ranks against every pull request present in the previous snapshot: one
+// that stays is still the object its recorded reference names. A surviving
+// issue ranks only against pull requests that stay, so a departed PR must
+// never satisfy the lookup for a surviving issue that moved into its rank.
 func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 	prByRank := make(map[int]Mark, len(s.Marks))
 	departedByRank := make(map[int]Mark)
@@ -98,6 +99,17 @@ func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 		} else {
 			prByRank[m.Rank] = m
 		}
+	}
+	// The fading issue's rank came from the previous snapshot, where a PR that
+	// survives still held a rank. Resolve against every PR from that snapshot.
+	// Where a survivor moved into a departed PR's rank, the departed PR owns
+	// that rank and wins the collision.
+	allByRank := make(map[int]Mark, len(prByRank)+len(departedByRank))
+	for rank, m := range prByRank {
+		allByRank[rank] = m
+	}
+	for rank, m := range departedByRank {
+		allByRank[rank] = m
 	}
 	// written holds every cell this layer claimed in the current frame, so a
 	// later issue can replace an earlier one's label (and the selected spring
@@ -138,7 +150,7 @@ func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 		y := v.top - 1
 		ranks := prByRank
 		if m.Departing {
-			ranks = departedByRank
+			ranks = allByRank
 		}
 		pr, ok := ranks[m.Rank]
 		prRow := -1

@@ -180,6 +180,99 @@ func TestIssueFeedFollowsSurvivingPR(t *testing.T) {
 	}
 }
 
+// A fading issue whose recorded closing reference names a pull request that
+// stays must keep its feed for the whole fade. The link is recorded state:
+// removing only the issue from the new snapshot must not silence its spring.
+func TestDepartingIssueKeepsFeedToSurvivingPR(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{
+		Now:          day,
+		Branches:     []repo.Branch{{Name: "main"}, {Name: "topic"}},
+		PullRequests: []repo.PullRequest{{Number: 12, Head: "topic", Base: "main", State: "open"}},
+		Issues:       []repo.Issue{{Number: 5, Title: "leak", State: "open", ClosedBy: 12}},
+	}
+	next := prev
+	next.Now = day.Add(time.Minute)
+	next.Issues = nil
+
+	const width, height = 100, 30
+	topicX := 3 + (width-4)/2 // two even lanes at this width
+	for frame := 0; frame < scene.TransitionFrames; frame++ {
+		g := scene.Frame(scene.Transition(prev, next, frame), frame, width, height)
+		if got := g[3][topicX]; got.Rune != '∿' || got.Style != scene.Faded {
+			t.Fatalf("frame %d: fading spring missing: %q\n%s", frame, got, g)
+		}
+		if g[3][topicX+1].Rune != '#' || g[3][topicX+2].Rune != '5' {
+			t.Fatalf("frame %d: fading spring label wrong:\n%s", frame, g)
+		}
+		feeds := 0
+		for y := 4; y < 19; y++ {
+			if g[y][topicX].Rune == '⋮' {
+				feeds++
+			}
+		}
+		if feeds != 15 || g[19][topicX].Rune != '◇' {
+			t.Fatalf("frame %d: feed does not reach the surviving PR (%d cells):\n%s", frame, feeds, g)
+		}
+	}
+	settled := scene.Frame(scene.Transition(prev, next, scene.TransitionFrames), scene.TransitionFrames, width, height)
+	if settled[19][topicX].Rune != '◇' {
+		t.Fatalf("settled frame lost the surviving PR:\n%s", settled)
+	}
+	for y := 0; y < height; y++ {
+		if r := settled[y][topicX].Rune; r == '⋮' || r == '∿' {
+			t.Fatalf("fade left a spring or feed behind:\n%s", settled)
+		}
+	}
+}
+
+// When a departed PR's rank is reused by a survivor, each issue still follows
+// the PR that held that rank in its own snapshot: the fading issue keeps its
+// former PR, and the surviving issue keeps the one that stayed.
+func TestFeedKeepsEachIssueAtACollidedRank(t *testing.T) {
+	day := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	prev := repo.Snapshot{
+		Now:      day,
+		Branches: []repo.Branch{{Name: "main"}, {Name: "topic"}, {Name: "base"}},
+		PullRequests: []repo.PullRequest{
+			{Number: 11, Head: "base", Base: "main", State: "open"},
+			{Number: 12, Head: "topic", Base: "main", State: "open"},
+		},
+		Issues: []repo.Issue{
+			{Number: 5, Title: "leaking", State: "open", ClosedBy: 11},
+			{Number: 6, Title: "live", State: "open", ClosedBy: 12},
+		},
+	}
+	next := prev
+	next.Now = day.Add(time.Minute)
+	next.Branches = []repo.Branch{{Name: "main"}, {Name: "topic"}}
+	next.PullRequests = prev.PullRequests[1:]
+	next.Issues = prev.Issues[1:]
+
+	g := scene.Frame(scene.Transition(prev, next, 8), 8, 100, 30)
+	for _, tc := range []struct {
+		name, label string
+		x           int
+	}{
+		{"fading issue, departed PR's former rank", "#5", 67}, // retained base lane
+		{"surviving issue, reused rank", "#6", 35},            // topic lane
+	} {
+		feeds := 0
+		for y := 4; y < 19; y++ {
+			if g[y][tc.x].Rune == '⋮' {
+				feeds++
+			}
+		}
+		if feeds != 15 || g[19][tc.x].Rune != '◇' {
+			t.Fatalf("%s feed does not reach its own PR:\n%s", tc.name, g)
+		}
+		if g[3][tc.x].Rune != '∿' || g[3][tc.x+1].Rune != '#' ||
+			g[3][tc.x+2].Rune != rune(tc.label[1]) {
+			t.Fatalf("%s spring label wrong:\n%s", tc.name, g)
+		}
+	}
+}
+
 // The linked spring's shelf row is also the row a new newest commit drips
 // through. The issue layer draws last, but it may only fill cells that are
 // empty or its own: the falling bead, the CI pulse beside it and the lane
