@@ -3,6 +3,8 @@ check:
 	@test -z "$$(gofmt -l $$(find cmd internal -name '*.go'))" || (echo 'Run gofmt on Go sources'; exit 1)
 	go vet ./...
 	go test ./...
+	# Compile the opt-in live capture probe without running it: it needs a token.
+	go test -tags graphqlcapture -run '^$$' ./internal/github
 # -update belongs to the packages that write reviewed golden frames. Sending it
 # to every test binary lets any new package turn this target into a flag error.
 golden:
