@@ -129,15 +129,25 @@ REST reads, so it proves the replay and golden path but never ran
 that proof cannot be produced here. Nothing in this section changes the
 recording's provenance or claims the GraphQL mapping was verified.
 
-Someone with a GitHub token can close #21 without changing any code. Use the
-unmodified binary against a **public** repository with an open pull request that
-has at least one review, so the capture goes through the real `internal/github`
-boundary:
+Someone with a GitHub token can produce the missing proof. The opt-in probe in
+`internal/github/live_capture_test.go` is excluded from `make check` so the
+normal suite stays offline; it drives the unmodified `BuildSnapshot` transport
+against a **public** repository with a reviewed open pull request:
 
 ```sh
-export GITHUB_TOKEN=...   # never commit the token, an Authorization header, or private data
-percolate OWNER/REPO --record /tmp/open-pr-graphql.json
+GITHUB_TOKEN=... go test -tags graphqlcapture ./internal/github \
+  -run TestLiveGraphQLCapture -v \
+  -args -capture-out=/tmp/open-pr-graphql.json -capture-repo=rocq-prover/rfcs
 ```
+
+It fails unless a live GraphQL response filled a named review author/state and
+a head commit with an author, date and parent on a PR-only lane, then prints the
+scratch file's SHA-256. It writes only public snapshot data; the token is never
+printed or saved. The equivalent CLI read is
+`percolate OWNER/REPO --record /tmp/open-pr-graphql.json` with `GITHUB_TOKEN`
+exported (never commit the token, an `Authorization` header, or private data).
+A passing run is the live proof, but #21 is only closed once that recording is
+checked in with honest provenance and reviewed goldens, as below.
 
 `BuildSnapshot` calls `fetchPullDetails` whenever the read contains an open PR
 and fails the whole read if the GraphQL call errors or returns a shape it cannot
