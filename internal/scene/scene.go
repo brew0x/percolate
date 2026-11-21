@@ -50,6 +50,13 @@ func (g Grid) String() string {
 type Mark struct {
 	ID, Kind, Label, Detail string
 	Lane, Base, Rank, Total int
+	// PrevRank is the rank a pull request held in the previous snapshot.
+	// Build sets it to Rank for its own snapshot; Transition replaces it for
+	// PRs that survive a change, so a fading issue can resolve its recorded
+	// closing reference in the rank space it was recorded in even when the
+	// named PR moved. A PR new in the next snapshot carries -1: it was not
+	// present before the change and never answers a fading issue's lookup.
+	PrevRank int
 	// Drip is how many rows above its resting row a mark draws while it is
 	// entering during a transition, counting down to zero as it settles. A
 	// newest commit uses it instead of a negative rank so its fall, and the
@@ -58,9 +65,10 @@ type Mark struct {
 	Drip int
 	// Departing marks were present in the previous snapshot and are absent
 	// from the new one; Transition appends them while they fade. Keeping them
-	// identifiable lets the issue layer resolve closing references against
-	// only the pull requests the new snapshot still holds, so a departed PR
-	// never answers a surviving issue's rank lookup.
+	// identifiable lets the issue layer keep every PR from that snapshot in
+	// view while a fading issue resolves its closing reference: a survivor
+	// that moved rank still answers, and a departed PR never answers a
+	// surviving issue's lookup.
 	Departing bool
 	Glyph     rune
 	Style     Style
@@ -173,7 +181,7 @@ func Build(s repo.Snapshot) Scene {
 			detail += " · " + strings.Join(reviews, ", ")
 		}
 		detail += " · " + reviewWord(review)
-		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: detail, Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, Total: len(s.PullRequests), Glyph: '◇', Review: review, Style: Fresh})
+		out.Marks = append(out.Marks, Mark{ID: fmt.Sprintf("pr:%d", p.Number), Kind: "pr", Label: fmt.Sprintf("#%d", p.Number), Detail: detail, Lane: addLane(p.Head), Base: addLane(p.Base), Rank: i, PrevRank: i, Total: len(s.PullRequests), Glyph: '◇', Review: review, Style: Fresh})
 	}
 	// Issues follow PRs so a closing reference resolves to the same head lane.
 	out.Marks = append(out.Marks, buildIssues(s, addLane)...)

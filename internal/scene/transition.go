@@ -48,6 +48,27 @@ func Transition(prev, next repo.Snapshot, frame int) Scene {
 	for _, m := range prevBuilt.Marks {
 		prevIDs[m.ID] = true
 	}
+	// Every PR in prev keeps its rank for the fade, keyed by PR identity. A
+	// survivor records that rank in PrevRank even though the Rank it draws
+	// with comes from next; a PR that entered in next has no rank in prev and
+	// carries -1, so it can never answer a fading issue's lookup. Departing
+	// PRs are copied from prevBuilt with their own PrevRank intact.
+	prevPRRank := make(map[string]int, len(prevBuilt.Marks))
+	for _, m := range prevBuilt.Marks {
+		if m.Kind == "pr" {
+			prevPRRank[m.ID] = m.Rank
+		}
+	}
+	for i := range base.Marks {
+		m := &base.Marks[i]
+		if m.Kind != "pr" {
+			continue
+		}
+		m.PrevRank = -1
+		if rank, ok := prevPRRank[m.ID]; ok {
+			m.PrevRank = rank
+		}
+	}
 	// mid is the frame at which entering objects stop forming and settling
 	// runs stop pulsing. The two halves keep a change legible before it lands.
 	mid := TransitionFrames / 2

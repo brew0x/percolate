@@ -18,8 +18,9 @@ const (
 // pull request absent from the snapshot stays unlinked, so no link is invented.
 //
 // For a linked issue, Base holds the pull request's head lane and Rank holds
-// the pull request's index in snapshot order (the same Rank the PR mark uses).
-// For an unlinked issue, Base is negative and Rank is its margin row offset.
+// the pull request's index in the snapshot that recorded the link (the Rank
+// that PR mark used there). For an unlinked issue, Base is negative and Rank
+// is its margin row offset.
 // Lane points at the first lane for an unlinked issue so navigation keeps the
 // margin in view.
 func buildIssues(s repo.Snapshot, addLane func(string) int) []Mark {
@@ -83,33 +84,27 @@ type issueView struct {
 // draws last so it stays inspectable.
 //
 // Closing references resolve by the pull request's snapshot rank. A fading
-// issue ranks against every pull request present in the previous snapshot: one
-// that stays is still the object its recorded reference names. A surviving
-// issue ranks only against pull requests that stay, so a departed PR must
-// never satisfy the lookup for a surviving issue that moved into its rank.
+// issue's rank came from the previous snapshot, so it resolves against every
+// PR that snapshot held: Transition keeps each PR's rank there, whether the PR
+// stays or fades, and the feed follows the PR actually drawn at that rank. A
+// surviving issue ranks only against pull requests that stay, so a departed PR
+// must never satisfy the lookup for a surviving issue that moved into its rank.
 func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
-	prByRank := make(map[int]Mark, len(s.Marks))
-	departedByRank := make(map[int]Mark)
+	prByRank := make(map[int]Mark, len(s.Marks))   // PRs that stay, at their drawn rank
+	prevByRank := make(map[int]Mark, len(s.Marks)) // every PR from prev, at its rank there
 	for _, m := range s.Marks {
 		if m.Kind != "pr" {
 			continue
 		}
-		if m.Departing {
-			departedByRank[m.Rank] = m
-		} else {
+		// Ranks are unique within one snapshot, so a survivor's previous rank
+		// and a departed PR's rank cannot collide. PRs new in next have no
+		// previous rank and stay out of this map.
+		if m.PrevRank >= 0 {
+			prevByRank[m.PrevRank] = m
+		}
+		if !m.Departing {
 			prByRank[m.Rank] = m
 		}
-	}
-	// The fading issue's rank came from the previous snapshot, where a PR that
-	// survives still held a rank. Resolve against every PR from that snapshot.
-	// Where a survivor moved into a departed PR's rank, the departed PR owns
-	// that rank and wins the collision.
-	allByRank := make(map[int]Mark, len(prByRank)+len(departedByRank))
-	for rank, m := range prByRank {
-		allByRank[rank] = m
-	}
-	for rank, m := range departedByRank {
-		allByRank[rank] = m
 	}
 	// written holds every cell this layer claimed in the current frame, so a
 	// later issue can replace an earlier one's label (and the selected spring
@@ -150,7 +145,7 @@ func drawIssues(g Grid, s Scene, v issueView, own func(int, int, string)) {
 		y := v.top - 1
 		ranks := prByRank
 		if m.Departing {
-			ranks = allByRank
+			ranks = prevByRank
 		}
 		pr, ok := ranks[m.Rank]
 		prRow := -1
