@@ -82,14 +82,16 @@ func reviewStyle(st ReviewState, plain Style) Style {
 	}
 }
 
-// reviewWord names the resolved state in a pull request's details.
+// reviewWord names the resolved state in a pull request's details. It uses the
+// same `resolved` field label as the detail panel, leaving `reviews` for the
+// recorded reviewer: state pairs beside it.
 func reviewWord(st ReviewState) string {
 	switch st {
 	case ReviewApproved:
-		return "reviews: approved"
+		return "resolved: approved"
 	case ReviewChanges:
-		return "reviews: changes requested"
+		return "resolved: changes requested"
 	default:
-		return "reviews: waiting"
+		return "resolved: waiting"
 	}
 }

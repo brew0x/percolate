@@ -214,14 +214,17 @@ func TestReviewStateInDetails(t *testing.T) {
 			byID[m.ID] = m.Detail
 		}
 	}
-	if want := "reviews: approved"; !strings.Contains(byID["pr:1"], want) {
-		t.Fatalf("approved detail lost: %q", byID["pr:1"])
-	}
-	if want := "reviews: waiting"; !strings.Contains(byID["pr:2"], want) {
-		t.Fatalf("waiting detail lost: %q", byID["pr:2"])
-	}
-	if want := "reviews: changes requested"; !strings.Contains(byID["pr:3"], want) {
-		t.Fatalf("changes detail lost: %q", byID["pr:3"])
+	for id, want := range map[string]string{
+		"pr:1": "resolved: approved",
+		"pr:2": "resolved: waiting",
+		"pr:3": "resolved: changes requested",
+	} {
+		if !strings.Contains(byID[id], want) {
+			t.Fatalf("%s detail lost %q: %q", id, want, byID[id])
+		}
+		if strings.Contains(byID[id], "reviews:") {
+			t.Fatalf("%s detail used the recorded reviews field for the resolved state: %q", id, byID[id])
+		}
 	}
 	if !strings.Contains(byID["pr:1"], "sage: approved") {
 		t.Fatalf("recorded reviews lost from details: %q", byID["pr:1"])
