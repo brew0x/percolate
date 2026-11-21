@@ -63,13 +63,22 @@ func jobMarks(jobs []repo.Job) []JobMark {
 	return out
 }
 
+// JobCount names a recorded job count with the same wording the detail panel
+// uses, so a scene detail and a panel field never disagree on one job.
+func JobCount(n int) string {
+	if n == 1 {
+		return "1 job"
+	}
+	return fmt.Sprintf("%d jobs", n)
+}
+
 // runDetail reports only recorded run fields. A nil job list says so rather
 // than claiming a numeric zero; failing jobs are named so the detail panel
 // explains a fail mark in the job strip.
 func runDetail(r repo.WorkflowRun) string {
 	jobs := "jobs not recorded"
 	if r.Jobs != nil {
-		jobs = fmt.Sprintf("%d jobs", len(r.Jobs))
+		jobs = JobCount(len(r.Jobs))
 		if failing := failingJobNames(r.Jobs); failing != "" {
 			jobs += " · failing: " + failing
 		}

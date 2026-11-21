@@ -102,6 +102,13 @@ func TestVisualLanguageNamesResolvedReviewField(t *testing.T) {
 	if !strings.Contains(panel, "resolved") || !strings.Contains(panel, "approved") {
 		t.Fatalf("panel lost the resolved review field:\n%s", panel)
 	}
+	// The scene's recorded detail is where a departing pull request is read
+	// from; it must name the same field as the panel rather than calling the
+	// resolved state one of the recorded reviews.
+	detail := scene.Build(snap).Marks[0].Detail
+	if !strings.Contains(detail, "resolved: approved") || strings.Contains(detail, "reviews:") {
+		t.Fatalf("scene detail did not use the panel's resolved field:\n%s", detail)
+	}
 	doc, err := os.ReadFile("../../docs/visual-language.md")
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +158,23 @@ func TestVisualLanguageNamesRecordedJobCount(t *testing.T) {
 	}
 	if none := panel(nil); !strings.Contains(none, "jobs not recorded") || strings.Contains(none, "0 jobs") {
 		t.Fatalf("missing job list reported a count:\n%s", none)
+	}
+	// A departing run is read from the scene's recorded detail rather than a
+	// structured field, so the scene must count jobs the same way the panel
+	// does. Sharing one helper keeps the two surfaces from drifting again.
+	for _, tt := range []struct {
+		jobs      []repo.Job
+		want, bad string
+	}{
+		{[]repo.Job{{Name: "build"}}, "1 job", "1 jobs"},
+		{[]repo.Job{{Name: "build"}, {Name: "test"}}, "2 jobs", ""},
+		{nil, "jobs not recorded", "0 jobs"},
+	} {
+		snap := repo.Snapshot{Runs: []repo.WorkflowRun{{ID: 9, Jobs: tt.jobs}}}
+		got := scene.Build(snap).Marks[0].Detail
+		if !strings.Contains(got, tt.want) || (tt.bad != "" && strings.Contains(got, tt.bad)) {
+			t.Fatalf("scene detail did not use the panel's job wording %q (bad %q):\n%s", tt.want, tt.bad, got)
+		}
 	}
 	doc, err := os.ReadFile("../../docs/visual-language.md")
 	if err != nil {

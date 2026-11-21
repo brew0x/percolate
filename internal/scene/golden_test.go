@@ -140,8 +140,8 @@ func TestRunJobDetails(t *testing.T) {
 	if want := "jobs not recorded"; !strings.Contains(marks[0].Detail, want) || strings.Contains(marks[0].Detail, "0 jobs") {
 		t.Fatalf("unrecorded jobs rendered as data: %q", marks[0].Detail)
 	}
-	if !strings.Contains(marks[1].Detail, "1 jobs") {
-		t.Fatalf("recorded job count lost: %q", marks[1].Detail)
+	if !strings.Contains(marks[1].Detail, "1 job") || strings.Contains(marks[1].Detail, "1 jobs") {
+		t.Fatalf("one recorded job was not singular: %q", marks[1].Detail)
 	}
 	if !strings.Contains(marks[2].Detail, "0 jobs") {
 		t.Fatalf("explicitly empty job list lost: %q", marks[2].Detail)
