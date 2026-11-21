@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// laneNameRow is the row the lane names occupy. A PR number label normally
+// sits one row above its diamond; in a compact frame that row can land here,
+// where drawing it would paint a hybrid of a branch name and a PR number.
+const laneNameRow = 2
+
 type Style uint8
 
 const (
@@ -252,7 +257,7 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	label(2, 0, fmt.Sprintf("PERCOLATE  %d–%d/%d", min(start+1, len(s.Lanes)), start+count, len(s.Lanes)), width-2, Faded)
 	for i := start; i < start+count; i++ {
 		x := xpos(i)
-		label(x, 2, s.Lanes[i], lay.widthOf(i)-2, Fresh)
+		label(x, laneNameRow, s.Lanes[i], lay.widthOf(i)-2, Fresh)
 	}
 	// One dim mark on each viewport edge stands for the whole run of
 	// offscreen lanes on that side, so a crowded landscape reads as a soft
@@ -261,10 +266,10 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	// so this never covers a lane name; the header above gives the exact
 	// count. No lane is invented and no object is aggregated.
 	if lay.hiddenLeft > 0 {
-		put(0, 2, '«', Faded)
+		put(0, laneNameRow, '«', Faded)
 	}
 	if lay.hiddenRight > 0 {
-		put(width-1, 2, '»', Faded)
+		put(width-1, laneNameRow, '»', Faded)
 	}
 	// Draw only recorded parent paths. Each path cell shows the union of the
 	// recorded segments through it, so a bend never hides a through path and
@@ -455,12 +460,18 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 			}
 			put(x, by, m.Glyph, style)
 			own(x, by, m.ID)
-			label(x+1, by-1, m.Label, lay.widthOf(m.Lane)-2, style)
-			for i := range []rune(m.Label) {
-				if i >= lay.widthOf(m.Lane)-2 {
-					break
+			// A compact frame can put the label row on the lane names. A
+			// number painted there would read as part of a branch name and
+			// name no recorded object, so leave the lane name whole; the
+			// diamond, flow and details still identify the pull request.
+			if by-1 != laneNameRow {
+				label(x+1, by-1, m.Label, lay.widthOf(m.Lane)-2, style)
+				for i := range []rune(m.Label) {
+					if i >= lay.widthOf(m.Lane)-2 {
+						break
+					}
+					own(x+1+i, by-1, m.ID)
 				}
-				own(x+1+i, by-1, m.ID)
 			}
 		case "run":
 			if cells := runCells(m, frameIndex, max(1, lay.widthOf(m.Lane)-2), selected); len(cells) > 0 {
