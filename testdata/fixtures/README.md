@@ -54,6 +54,18 @@ repositories are ever recorded here; private data is never committed.
   cap) and #11914 supplies a head commit with five parents (past the old
   three-parent cap). Each review list fits one 100-item REST page; no PR's
   fields were fabricated or merged with another PR's fields.
+- **Acceptance reconciliation for #19:** the issue asks for one PR with more
+  than ten reviews *and* a head commit with more than three parents in a
+  recorded public fixture. On 2026-11-21 a scan of the 500 most-commented public
+  `rocq-prover/rocq` pull requests with more than ten comments checked each head
+  commit's parent list through the public commit endpoint. No single PR had both properties:
+  #8301 has the long review history and one parent, and the only octopus head,
+  #11914, has five parents and five reviews. Re-check either property with the
+  URLs above. This fixture keeps both real cases rather than inventing a PR
+  that does not exist; the combined single-PR case is checked locally by
+  `TestWatchRecordsAndReplaysIdentically`, whose one PR has 103 reviews and a
+  six-parent head commit. The public fixture and that local proof are checked
+  together by `TestRecordedPullDetailsCoversBothPublicConnections`.
 - **SHA-256:** `81a5aa1af746ed220663977888174d043ef0941009342be93a903c3a263a73d8`
 - **Replay:** golden frames `testdata/golden/recorded-pull-details-*` are derived
   from this exact file and checked in CI by `TestGolden`,

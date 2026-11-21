@@ -573,6 +573,79 @@ func TestRecordedPullDetailsFixtureProvenance(t *testing.T) {
 	}
 }
 
+// The local proof uses the same bounded read as the public recording, but its
+// one synthetic PR carries both long lists in the same object. Keeping it in a
+// helper lets the provenance test check the two public cases and the combined
+// case against the same replay path without duplicating the fake server.
+func recordedLocalPullDetailProof(t *testing.T) repo.Snapshot {
+	t.Helper()
+	var calls int
+	server := fakeGitHub(t, &calls)
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("PERCOLATE_GITHUB_URL", server.URL)
+	record := filepath.Join(t.TempDir(), "local-proof.json")
+	args := []string{"render", "acme/widgets", "--record", record, "--frame", "0", "--size", "60x20", "--color=false"}
+	if code := run(args, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("local proof exit %d", code)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("local proof is not a snapshot: %v", err)
+	}
+	return snap
+}
+
+// The public fixture must keep both real connections, and the combined case
+// must stay checkable locally: no public PR with both properties was found, so
+// neither the fixture nor the proof may silently lose a bounded list.
+func TestRecordedPullDetailsCoversBothPublicConnections(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/recorded-pull-details.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public repo.Snapshot
+	if err := json.Unmarshal(data, &public); err != nil {
+		t.Fatal(err)
+	}
+	var longReviews, octopusHead bool
+	for _, pr := range public.PullRequests {
+		if len(pr.Reviews) > 10 {
+			longReviews = true
+		}
+		for _, cm := range public.Commits {
+			if cm.Branch == pr.Head && len(cm.Parents) > 3 {
+				octopusHead = true
+			}
+		}
+	}
+	if !longReviews || !octopusHead {
+		t.Fatalf("public fixture lost a bounded connection: longReviews=%t octopusHead=%t", longReviews, octopusHead)
+	}
+
+	local := recordedLocalPullDetailProof(t)
+	if len(local.PullRequests) != 1 {
+		t.Fatalf("local proof has %d PRs, want one", len(local.PullRequests))
+	}
+	pr := local.PullRequests[0]
+	if len(pr.Reviews) != 103 {
+		t.Fatalf("local proof has %d reviews, want 103", len(pr.Reviews))
+	}
+	var parents int
+	for _, cm := range local.Commits {
+		if cm.Branch == pr.Head {
+			parents = len(cm.Parents)
+		}
+	}
+	if parents != 6 {
+		t.Fatalf("local proof head has %d parents, want 6", parents)
+	}
+}
+
 func TestWatchLiveFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
