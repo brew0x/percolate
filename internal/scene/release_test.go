@@ -207,6 +207,30 @@ func TestSurvivingArtifactReplacesFadingArtifact(t *testing.T) {
 	}
 }
 
+// Selection orders a mark inside its layer, not across layers. A selected
+// release that is fading out must still yield its row to the replacement, just
+// as an unselected departure does; otherwise the old artifact and tag stay on
+// screen for the whole fade and name a release that is already gone.
+func TestSelectedDepartingReleaseDoesNotHideSurvivor(t *testing.T) {
+	const sha = "1111111111111111111111111111111111111111"
+	prev := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha, Branch: "main"}},
+		Releases: []repo.Release{{Tag: "v1", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "old-long-name.bin"}}}},
+	}
+	next := prev
+	next.Releases = []repo.Release{{Tag: "v2", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "new.bin"}}}}
+	sc := scene.Transition(prev, next, 8)
+	sc.SelectedID = "release:v1"
+	g := scene.Frame(sc, 8, 60, 20)
+	if got := rowText(g[17]); got != "▤ new.bin" {
+		t.Fatalf("frame 8 artifact row = %q, want %q\n%s", got, "▤ new.bin", g.String())
+	}
+	if got := rowText(g[18]); !strings.HasPrefix(got, "◆ v2") || strings.Contains(got, "v1") {
+		t.Fatalf("frame 8 release row = %q, want the survivor\n%s", got, g.String())
+	}
+}
+
 // A shorter surviving name must clear the tail of a longer departing one: a
 // half-overwritten filename would cite no recorded artifact.
 func TestSurvivingArtifactClearsLongerFadingName(t *testing.T) {

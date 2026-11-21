@@ -102,38 +102,47 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			own(x, y, c.owner)
 		}
 	}
-	// artifactCells holds artifact runs written this frame. A later pass may
-	// claim one of these cells — a surviving release wins over a fading one —
-	// but a path, flow or any other recorded mark keeps its cell.
-	artifactCells := map[[2]int]bool{}
-	artifactFree := func(x, y int) bool {
+	// reserved is the bottom band's single claim map: the cell holds the pass
+	// that last wrote it, plus one (zero means free). Every part of the band
+	// uses it — release rows, overflow marks, standalone deployments and
+	// artifact rows alike — so a fading mark can never take a cell from one
+	// that stays. Paths and flows are drawn earlier and never carry a claim,
+	// so they still keep their cells: a claim only frees a cell another mark
+	// in this band wrote, not recorded data from another layer.
+	reserved := map[[2]int]int{}
+	claim := func(pass int) int { return pass + 1 }
+	free := func(x, y, pass int) bool {
 		if x < 0 || x >= v.width || y < 0 || y >= v.height {
 			return false
 		}
-		return g[y][x].Rune == ' ' || artifactCells[[2]int{x, y}]
+		prior := reserved[[2]int{x, y}]
+		if prior > claim(pass) {
+			return false
+		}
+		return g[y][x].Rune == ' ' || prior > 0
 	}
 	// clearArtifacts erases an earlier run on the same row before a new one is
 	// drawn, so a shorter surviving name cannot leave the tail of a longer
-	// departing name behind.
-	clearArtifacts := func(x, y, upto int) {
+	// departing name behind. It only clears claims from this pass or earlier:
+	// a surviving artifact is never erased by something on its way out.
+	clearArtifacts := func(x, y, upto, pass int) {
 		for xx := x; xx < upto && xx < v.width; xx++ {
 			key := [2]int{xx, y}
-			if artifactCells[key] {
+			if prior := reserved[key]; prior > 0 && prior <= claim(pass) {
 				g[y][xx] = Cell{' ', Plain}
 				own(xx, y, "")
-				delete(artifactCells, key)
+				delete(reserved, key)
 			}
 		}
 	}
-	// reserved holds cells owned by a surviving mark. A departing release may
-	// be covered by a deployment that stays, but nothing that stays may be
-	// covered by something on its way out.
-	reserved := map[[2]int]bool{}
 	// overflow keeps a hidden failure at a shared cell: a later release whose
 	// own omissions are all healthy must not cover an earlier failure's mark.
+	// The pass travels with the mark so a settled owner also wins over a
+	// selected mark that is only fading out.
 	type overflowMark struct {
 		style Style
 		owner string
+		pass  int
 	}
 	overflow := map[[2]int]overflowMark{}
 
@@ -149,12 +158,17 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			linked["release:"+m.ReleaseTag] = append(linked["release:"+m.ReleaseTag], m)
 		}
 	}
+	// Pass order follows the rest of the frame: everything leaving draws in
+	// pass 0, survivors in pass 1 and a selected survivor in pass 2. Selection
+	// orders a mark inside its own layer; it never promotes a departing mark
+	// above one that stays. Each pass draws non-selected marks first, so the
+	// selected one still draws last where it can be inspected.
 	passOf := func(m Mark) int {
 		switch {
-		case m.ID == s.SelectedID:
-			return 2
 		case m.Departing:
 			return 0
+		case m.ID == s.SelectedID:
+			return 2
 		default:
 			return 1
 		}
@@ -220,26 +234,32 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 		for i, c := range cells {
 			put(x+i, row, c)
 			if pass > 0 {
-				reserved[[2]int{x + i, row}] = true
+				reserved[[2]int{x + i, row}] = claim(pass)
 			}
 		}
 		if omitted > 0 {
-			mark := overflowMark{Faded, m.ID}
+			mark := overflowMark{Faded, m.ID, claim(pass)}
 			for _, d := range deps[len(deps)-omitted:] {
 				if d.Style == Fail {
-					mark = overflowMark{Fail, d.ID}
+					mark = overflowMark{Fail, d.ID, claim(pass)}
 					break
 				}
 			}
 			cell := [2]int{x, row + 1}
 			// Several releases on one lane may overflow into the same cell
 			// during a fade. A recorded failure keeps its mark and the
-			// deployment that names it; only healthy omissions may be covered.
-			if prior, ok := overflow[cell]; ok && prior.style == Fail && mark.style != Fail {
-				mark = prior
-			} else if mark.style == Fail {
+			// deployment that names it, whatever pass it came from; between
+			// two healthy omissions a surviving mark keeps the cell so a
+			// selected mark on its way out cannot cover it.
+			if prior, ok := overflow[cell]; ok {
+				if prior.style == Fail && mark.style != Fail || prior.pass > claim(pass) && mark.style != Fail {
+					mark = prior
+				}
+			}
+			if prior, ok := overflow[cell]; !ok || mark.style == Fail || mark.pass >= prior.pass {
 				overflow[cell] = mark
 			}
+			reserved[cell] = overflow[cell].pass
 			put(x, row+1, releaseCell{'!', mark.style, mark.owner})
 		}
 	}
@@ -248,9 +268,10 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 	// snapshot order. Rows at or above the commit region belong to the commits
 	// and PR flows, so they are never claimed. An artifact draws only when its
 	// whole run is free of recorded marks: a path or flow keeps its cell and no
-	// half-overwritten name can be read as a different artifact. Another
-	// artifact's run from an earlier pass may be replaced, so a surviving
-	// release wins its row over one on its way out. The full list is in details.
+	// half-overwritten name can be read as a different artifact. Claiming cells
+	// in the shared map lets a surviving release take its row from one on its
+	// way out while keeping a cell another survivor already owns. The full list
+	// is in details.
 	drawArtifacts := func(m Mark, pass int) {
 		if passOf(m) != pass || len(m.Artifacts) == 0 {
 			return
@@ -273,20 +294,20 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 				}
 				run = append(run, releaseCell{r, style, m.ID})
 			}
-			free := true
+			wholeRunFree := true
 			for j := range run {
-				if !artifactFree(x+j, y) {
-					free = false
+				if !free(x+j, y, pass) {
+					wholeRunFree = false
 					break
 				}
 			}
-			if !free {
+			if !wholeRunFree {
 				continue
 			}
-			clearArtifacts(x, y, x+v.widthOf(m.Lane))
+			clearArtifacts(x, y, x+v.widthOf(m.Lane), pass)
 			for j, c := range run {
 				put(x+j, y, c)
-				artifactCells[[2]int{x + j, y}] = true
+				reserved[[2]int{x + j, y}] = claim(pass)
 			}
 		}
 	}
@@ -303,36 +324,46 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 		if d.ID == s.SelectedID {
 			style = Selected
 		}
-		if reserved[[2]int{x, row}] {
+		if reserved[[2]int{x, row}] > 0 {
 			return
 		}
 		put(x, row, releaseCell{d.Glyph, style, d.ID})
-		reserved[[2]int{x, row}] = true
-		if !reserved[[2]int{x + 1, row}] {
+		reserved[[2]int{x, row}] = claim(pass)
+		if reserved[[2]int{x + 1, row}] == 0 {
 			put(x+1, row, releaseCell{' ', style, ""})
-			reserved[[2]int{x + 1, row}] = true
+			reserved[[2]int{x + 1, row}] = claim(pass)
 		}
 		limit := max(0, v.widthOf(d.Lane)-3)
 		for i, r := range d.Label {
-			if i >= limit || reserved[[2]int{x + 2 + i, row}] {
+			if i >= limit || reserved[[2]int{x + 2 + i, row}] > 0 {
 				break
 			}
 			put(x+2+i, row, releaseCell{r, style, d.ID})
-			reserved[[2]int{x + 2 + i, row}] = true
+			reserved[[2]int{x + 2 + i, row}] = claim(pass)
 		}
 	}
 
 	for pass := 0; pass < 3; pass++ {
-		for _, m := range s.Marks {
-			if m.Kind == "release" && v.visible(m.Lane) {
+		// Within a pass the selected mark draws last, matching the rest of
+		// Frame. It is still in its own layer: a selected departure cannot
+		// outrank a survivor just because it is selected.
+		for _, selected := range []bool{false, true} {
+			for _, m := range s.Marks {
+				if m.Kind != "release" || !v.visible(m.Lane) || (m.ID == s.SelectedID) != selected {
+					continue
+				}
 				drawReleaseRow(m, pass)
 				drawArtifacts(m, pass)
 			}
 		}
 	}
 	for pass := 0; pass < 3; pass++ {
-		for _, d := range alone {
-			drawAlone(d, pass)
+		for _, selected := range []bool{false, true} {
+			for _, d := range alone {
+				if (d.ID == s.SelectedID) == selected {
+					drawAlone(d, pass)
+				}
+			}
 		}
 	}
 }
