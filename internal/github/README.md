@@ -42,18 +42,27 @@ open pull requests, workflow runs, releases, deployments) and batched aliased
 GraphQL queries that fill per-PR reviews and head-commit anchors (25 PRs per
 query). Defaults bound one read to recent history: 1000 open pull requests,
 5000 default-branch commits, 5000 workflow runs and 1000 branches, releases
-and deployments each. The worst-case plan is 187 requests `plannedRequests()`,
-far under the 250-request budget and the 300-request budget promised for #3;
-short collections cost fewer (the 500-item fixture measures 49). A plan that
-exceeds its budget is rejected before any request. Every list read enforces
-its item cap as well as its page count, so a repository with more items than
-a cap fails with one line instead of truncating its history. Any failure
-returns no snapshot, and a PR that disappears between the list and its detail
-query keeps its lane but gains no reviews. Each PR detail records at most the
-10 most recent reviews (`reviews(last:10)`, the tail of GitHub's oldest-first
-connection) and its head commit at most 3 parents; anything beyond those caps
-is absent from the snapshot. The result is a point-in-time view: objects can
-change between pages, and list ETags only deduplicate identical repeat reads.
+and deployments each. The worst-case plan is 227 requests `plannedRequests()`
+(1 meta, 147 list pages and 80 detail queries: a first page plus one follow-up
+for each of the 40 batches), under the 250-request budget and the 300-request
+budget promised for #3; short collections cost fewer (the 500-item fixture
+measures 49). A plan that exceeds its budget is rejected before any request.
+Every list read enforces its item cap as well as its page count, so a repository
+with more items than a cap fails with one line instead of truncating its
+history. Any failure returns no snapshot, and a PR that disappears between the
+list and its detail query keeps its lane but gains no reviews.
+
+Each PR detail reads the whole review history and the head commit's parent
+list through GraphQL connections in 100-item pages, oldest first, with at most
+one follow-up page per batch. The follow-up asks for the head commit's `oid` as
+well as the next parent page, so the join can verify that both pages describe
+the same commit; a follow-up that loses that identity fails the whole read.
+The snapshot states the complete lists it read, up to 200 reviews and 200
+parents per PR; a connection with a third page fails the whole read rather than
+being truncated into a plausible-looking history. The same bound covers the
+cursor-less page case: a promised next page with no cursor is an error. The
+result is a point-in-time view: objects can change between pages, and list
+ETags only deduplicate identical repeat reads.
 
 A fork pull request's head lane uses GitHub's fork-qualified `head.label` (for
 example `alice:main`) when its head repository differs from the one being read;
@@ -90,4 +99,8 @@ acceptance. GitHub's GraphQL details still rest on local fakes: that API needs
 a token, which this recording deliberately did not use.
 
 Tests use local httptest servers and injected credential-helper output. They
-require no GitHub access, real credentials, or changes to rendering.
+require no GitHub access, real credentials, or changes to rendering. The
+record→replay test records a PR whose GraphQL response needs a second page for
+both reviews and parents, then checks the complete lists in the recording, the
+identical frame bytes and a request count inside the plan; the public
+recording's golden frames stay byte-identical.

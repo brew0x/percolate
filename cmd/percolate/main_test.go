@@ -273,9 +273,10 @@ func TestWatchBadRepository(t *testing.T) {
 
 func sha(i int) string { return fmt.Sprintf("%040x", i) }
 
-func fakeGitHub(t *testing.T) *httptest.Server {
+func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/repos/acme/widgets":
@@ -296,12 +297,38 @@ func fakeGitHub(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, fmt.Sprintf(`[{"id":9,"sha":"%s","environment":"prod"}]`, sha(3)))
 		case "/graphql":
 			body, _ := io.ReadAll(r.Body)
-			if !strings.Contains(string(body), "pullRequest(number:1)") {
+			query := string(body)
+			if !strings.Contains(query, "pullRequest(number:1)") {
 				t.Errorf("unexpected GraphQL query: %s", body)
 			}
-			fmt.Fprint(w, fmt.Sprintf(`{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
-				`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},"parents":{"nodes":[{"oid":"%s"}]}}},`+
-				`"reviews":{"nodes":[{"author":{"login":"sage"},"state":"APPROVED"}]}}}}}`, sha(4), sha(4), sha(2)))
+			// This one PR's GraphQL response exceeds the old 10-review and
+			// three-parent caps: the first page needs a follow-up for both
+			// connections, so a recording must join the pages to stay complete.
+			follow := strings.Contains(query, "after:")
+			first, last, parentFirst, parentLast := 0, 99, 0, 3
+			if follow {
+				first, last, parentFirst, parentLast = 100, 102, 4, 5
+			}
+			var reviews, parents []string
+			for i := first; i <= last; i++ {
+				reviews = append(reviews, fmt.Sprintf(`{"author":{"login":"reviewer-%d"},"state":"APPROVED"}`, i))
+			}
+			for i := parentFirst; i <= parentLast; i++ {
+				parents = append(parents, fmt.Sprintf(`{"oid":"%s"}`, sha(2000+i)))
+			}
+			more := !follow
+			// Real GraphQL returns only requested fields. The follow-up
+			// verifies the head oid before joining parents, so omit it when
+			// the query did not ask for it: a query regression must fail here.
+			oidField := ""
+			if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
+				oidField = fmt.Sprintf(`"oid":"%s",`, sha(4))
+			}
+			fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
+				`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}},`+
+				`"headRef":{"target":{%s"committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
+				`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}}}`,
+				sha(4), strings.Join(reviews, ","), more, oidField, strings.Join(parents, ","), more)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -309,7 +336,8 @@ func fakeGitHub(t *testing.T) *httptest.Server {
 }
 
 func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
-	server := fakeGitHub(t)
+	var calls int
+	server := fakeGitHub(t, &calls)
 	defer server.Close()
 	t.Setenv("GITHUB_TOKEN", "test-token")
 	t.Setenv("PERCOLATE_GITHUB_URL", server.URL)
@@ -339,12 +367,30 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		t.Fatalf("recording is not a snapshot: %v", err)
 	}
-	if len(snap.PullRequests) != 1 || len(snap.PullRequests[0].Reviews) != 1 ||
-		snap.PullRequests[0].Reviews[0].Author != "sage" {
-		t.Fatalf("reviews missing from recording: %+v", snap.PullRequests)
+	// The recording must hold both pages of the one long PR, not a tail: 103
+	// reviews in order and the head commit's six parents in order.
+	pr := snap.PullRequests[0]
+	if len(snap.PullRequests) != 1 || len(pr.Reviews) != 103 ||
+		pr.Reviews[0].Author != "reviewer-0" || pr.Reviews[99].Author != "reviewer-99" ||
+		pr.Reviews[100].Author != "reviewer-100" || pr.Reviews[102].State != "approved" {
+		t.Fatalf("reviews not complete in recording: %d, first=%+v last=%+v", len(pr.Reviews), pr.Reviews[0], pr.Reviews[102])
+	}
+	var head repo.Commit
+	for _, cm := range snap.Commits {
+		if cm.SHA == sha(4) {
+			head = cm
+		}
+	}
+	if len(head.Parents) != 6 || head.Parents[0] != sha(2000) || head.Parents[5] != sha(2005) {
+		t.Fatalf("head parents not complete in recording: %+v", head.Parents)
 	}
 	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
 		t.Fatalf("unexpected objects: %+v", snap)
+	}
+	// 227 is the documented worst-case plan for default options. This short
+	// read costs one page per list plus two detail pages for the one batch.
+	if calls > 227 || calls >= 250 {
+		t.Fatalf("record→replay used %d requests, over the 227-request plan and 250-request budget", calls)
 	}
 }
 
@@ -426,6 +472,177 @@ func TestRecordedPublicFixtureProvenance(t *testing.T) {
 	if actual != string(documented[1]) {
 		t.Fatalf("public recording changed: documented SHA-256 %s, file hashes to %s",
 			documented[1], actual)
+	}
+}
+
+// The second public recording covers the pull-detail pagination finding in #19:
+// one real PR with more than ten reviews and another real PR whose head commit
+// has more than three parents. Checking the shape first keeps the replay from
+// silently passing on a fixture that lost those properties.
+func TestRecordedPullDetailsFixtureReplaysToGolden(t *testing.T) {
+	const fixturePath = "../../testdata/fixtures/recorded-pull-details.json"
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.PullRequests) != 2 {
+		t.Fatalf("recording has %d PRs, want the two public cases", len(snap.PullRequests))
+	}
+	byNumber := make(map[int]repo.PullRequest, len(snap.PullRequests))
+	for _, pr := range snap.PullRequests {
+		byNumber[pr.Number] = pr
+	}
+	long, ok := byNumber[8301]
+	if !ok || len(long.Reviews) <= 10 || long.Reviews[0].Author != "jfehrle" ||
+		long.Reviews[len(long.Reviews)-1].Author != "Zimmi48" ||
+		long.Reviews[len(long.Reviews)-1].State != "approved" {
+		t.Fatalf("PR 8301 lost its long review history: %+v", long)
+	}
+	octopus, ok := byNumber[11914]
+	if !ok || octopus.Head != "Zimmi48:split-gallina-ext" {
+		t.Fatalf("PR 11914 lost its head lane: %+v", octopus)
+	}
+	const headSHA = "cf978356dd0791cf6b4bc90dcc07a91cd57bd79e"
+	var head repo.Commit
+	found := false
+	for _, cm := range snap.Commits {
+		if cm.SHA == headSHA {
+			head, found = cm, true
+		}
+	}
+	if !found || head.Branch != octopus.Head || len(head.Parents) <= 3 ||
+		head.Parents[0] != "ce6ad8544fe4bd6b5cf83d38424cd7877ff226cc" ||
+		head.Parents[len(head.Parents)-1] != "545f2a76e84cea2d9bfecc62ff417e97b3652bd2" {
+		t.Fatalf("PR 11914 head lost its five parents: %+v", head)
+	}
+
+	for _, frame := range []int{0, 7, 30} {
+		t.Run(fmt.Sprintf("frame%02d", frame), func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			args := []string{"render", "--fixture", fixturePath,
+				"--frame", fmt.Sprintf("%d", frame), "--size", "100x30", "--color=false"}
+			if code := run(args, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+			golden, err := os.ReadFile(fmt.Sprintf("../../testdata/golden/recorded-pull-details-100x30-%02d.txt", frame))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != string(golden) {
+				t.Fatalf("replay differs from golden frame %d:\n got:\n%s\nwant:\n%s", frame, out.String(), golden)
+			}
+			if strings.Contains(out.String(), "\x1b") {
+				t.Fatal("replay rendered ANSI sequences with --color=false")
+			}
+		})
+	}
+}
+
+// The public pull-detail recording's SHA-256 is parsed from its own README
+// section, so a stale note or an edited fixture fails here without making the
+// earlier public recording's provenance ambiguous.
+func TestRecordedPullDetailsFixtureProvenance(t *testing.T) {
+	const (
+		fixturePath = "../../testdata/fixtures/recorded-pull-details.json"
+		readmePath  = "../../testdata/fixtures/README.md"
+	)
+
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := regexp.MustCompile("(?ms)^## `recorded-pull-details\\.json`.*?^- \\*\\*SHA-256:\\*\\*\\s+`([0-9a-f]{64})`").
+		FindSubmatch(readme)
+	if section == nil {
+		t.Fatal("README has no documented SHA-256 for the pull-detail recording")
+	}
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(data))
+	if actual != string(section[1]) {
+		t.Fatalf("pull-detail recording changed: documented SHA-256 %s, file hashes to %s",
+			section[1], actual)
+	}
+}
+
+// The local proof uses the same bounded read as the public recording, but its
+// one synthetic PR carries both long lists in the same object. Keeping it in a
+// helper lets the provenance test check the two public cases and the combined
+// case against the same replay path without duplicating the fake server.
+func recordedLocalPullDetailProof(t *testing.T) repo.Snapshot {
+	t.Helper()
+	var calls int
+	server := fakeGitHub(t, &calls)
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("PERCOLATE_GITHUB_URL", server.URL)
+	record := filepath.Join(t.TempDir(), "local-proof.json")
+	args := []string{"render", "acme/widgets", "--record", record, "--frame", "0", "--size", "60x20", "--color=false"}
+	if code := run(args, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("local proof exit %d", code)
+	}
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("local proof is not a snapshot: %v", err)
+	}
+	return snap
+}
+
+// The public fixture must keep both real connections, and the combined case
+// must stay checkable locally: no public PR with both properties was found, so
+// neither the fixture nor the proof may silently lose a bounded list.
+func TestRecordedPullDetailsCoversBothPublicConnections(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/recorded-pull-details.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var public repo.Snapshot
+	if err := json.Unmarshal(data, &public); err != nil {
+		t.Fatal(err)
+	}
+	var longReviews, octopusHead bool
+	for _, pr := range public.PullRequests {
+		if len(pr.Reviews) > 10 {
+			longReviews = true
+		}
+		for _, cm := range public.Commits {
+			if cm.Branch == pr.Head && len(cm.Parents) > 3 {
+				octopusHead = true
+			}
+		}
+	}
+	if !longReviews || !octopusHead {
+		t.Fatalf("public fixture lost a bounded connection: longReviews=%t octopusHead=%t", longReviews, octopusHead)
+	}
+
+	local := recordedLocalPullDetailProof(t)
+	if len(local.PullRequests) != 1 {
+		t.Fatalf("local proof has %d PRs, want one", len(local.PullRequests))
+	}
+	pr := local.PullRequests[0]
+	if len(pr.Reviews) != 103 {
+		t.Fatalf("local proof has %d reviews, want 103", len(pr.Reviews))
+	}
+	var parents int
+	for _, cm := range local.Commits {
+		if cm.Branch == pr.Head {
+			parents = len(cm.Parents)
+		}
+	}
+	if parents != 6 {
+		t.Fatalf("local proof head has %d parents, want 6", parents)
 	}
 }
 

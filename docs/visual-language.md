@@ -127,6 +127,8 @@ in its job strip. A pull request lists its recorded reviews and
 adds the resolved review state under `resolved` (`resolved: waiting`,
 `resolved: approved`, `resolved: changes requested`) — the same fact its
 convergence mark draws. The `reviews` field above it holds the recorded
-`reviewer: state` list, not the resolved word. A pull request shows at most the ten most
-recent recorded reviews; older reviews are not present in the snapshot, so the
-list is never a claim about the full review history.
+`reviewer: state` list, not the resolved word. A live read records the full review
+history in 100-item pages with one follow-up (at most 200 reviews per pull
+request), and the head commit's parents in the same bounded way; a longer list
+fails the read instead of appearing as a truncated history. A replay lists
+exactly what its snapshot recorded.
