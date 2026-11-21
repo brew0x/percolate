@@ -19,6 +19,17 @@ const pageSize = 100
 // bodies stay small; 500 open PRs need 20 detail requests.
 const pullDetailBatch = 25
 
+// pullDetailPageSize is GitHub GraphQL's maximum connection page size. Reviews
+// and head-commit parents are read in pages of this size, oldest first, so the
+// snapshot carries the whole recorded history rather than a recent tail.
+const pullDetailPageSize = 100
+
+// pullDetailPages bounds the pages per connection: one first page plus one
+// follow-up for pull requests whose reviews or parents do not fit. It keeps the
+// worst-case detail read at two queries per batch, inside plannedRequests. A
+// longer connection fails the whole snapshot instead of truncating silently.
+const pullDetailPages = 2
+
 // SnapshotOptions bounds one live repository read. Exceeding a limit is an
 // error, never a partial snapshot: an incomplete read must not masquerade as
 // repository state. Every list read enforces both its page count and its item
@@ -38,7 +49,7 @@ type SnapshotOptions struct {
 // pull requests, 5000 default-branch commits, 5000 workflow runs and 1000 of
 // each other list. These are generous enough for an active repository; a read
 // that still exceeds one is a clear error, never a partial snapshot. The worst
-// case is 187 requests, under the 250-request budget (and the 300-request
+// case is 227 requests, under the 250-request budget (and the 300-request
 // budget promised for #3); a short collection costs fewer because each list
 // stops at its first short page. The limits hold for owner/repo in README.md.
 func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
@@ -62,11 +73,13 @@ func pages(items int) int { return items/pageSize + 1 }
 // plannedRequests is the exact upper bound on requests this configuration can
 // issue: each list read is bounded by pages(item cap) requests and, because
 // every item cap is enforced, pull-request details never exceed
-// ceil(MaxPullRequests/pullDetailBatch) queries. BuildSnapshot rejects
-// configurations whose plan exceeds MaxRequests, so a run can never drift
-// past its budget mid-read.
+// pullDetailPages*ceil(MaxPullRequests/pullDetailBatch) queries (one first page
+// plus at most one follow-up per batch). BuildSnapshot rejects configurations
+// whose plan exceeds MaxRequests, so a run can never drift past its budget
+// mid-read.
 func (o SnapshotOptions) plannedRequests() int {
-	detail := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
+	batches := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
+	detail := pullDetailPages * batches
 	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxPullRequests) +
 		pages(o.MaxRuns) + pages(o.MaxReleases) + pages(o.MaxDeployments) + detail
 }
@@ -364,63 +377,173 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 	return nil
 }
 
+// detailPageInfo is the GraphQL cursor state for a reviews or parents
+// connection. A cursor is only followed when hasNextPage is true.
+type detailPageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
+type detailReview struct {
+	Author *struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	State string `json:"state"`
+}
+
+type detailParents struct {
+	Nodes []struct {
+		OID string `json:"oid"`
+	} `json:"nodes"`
+	PageInfo detailPageInfo `json:"pageInfo"`
+}
+
+type pullDetail struct {
+	Number  int `json:"number"`
+	Reviews struct {
+		Nodes    []detailReview `json:"nodes"`
+		PageInfo detailPageInfo `json:"pageInfo"`
+	} `json:"reviews"`
+	HeadRef *struct {
+		Target json.RawMessage `json:"target"`
+	} `json:"headRef"`
+}
+
+type commitDetail struct {
+	OID           string     `json:"oid"`
+	CommittedDate *time.Time `json:"committedDate"`
+	Author        *struct {
+		Name *string `json:"name"`
+	} `json:"author"`
+	Parents detailParents `json:"parents"`
+}
+
+// detailCursor is the follow-up state for one pull request in a batch. Empty
+// flags mean the first page; a follow-up asks only for the connections that
+// reported another page, carrying that connection's opaque cursor.
+type detailCursor struct {
+	review, parent         string
+	needReview, needParent bool
+	commitIndex            int // where the head commit was appended, to extend its parents
+}
+
+// graphqlString quotes an opaque cursor as a GraphQL string literal. Cursors
+// come from the API, never from user input, but quoting keeps control
+// characters and escapes from changing the query.
+func graphqlString(s string) string {
+	quoted, _ := json.Marshal(s) // marshaling a string cannot fail
+	return string(quoted)
+}
+
+// pullDetailQuery builds one batched query. The first page reads both review
+// and parent connections in full-page steps; a follow-up reads only the
+// connections whose pageInfo asked for another page.
+func pullDetailQuery(chunk []repo.PullRequest, cursors []detailCursor) string {
+	var q strings.Builder
+	q.WriteString("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){")
+	for i, p := range chunk {
+		fmt.Fprintf(&q, "p%d:pullRequest(number:%d){", i, p.Number)
+		if i < len(cursors) && (cursors[i].needReview || cursors[i].needParent) {
+			q.WriteString("number ")
+			if cursors[i].needReview {
+				fmt.Fprintf(&q, "reviews(first:%d,after:%s){nodes{author{login} state} pageInfo{hasNextPage endCursor}} ",
+					pullDetailPageSize, graphqlString(cursors[i].review))
+			}
+			if cursors[i].needParent {
+				fmt.Fprintf(&q, "headRef{target{... on Commit{parents(first:%d,after:%s){nodes{oid} pageInfo{hasNextPage endCursor}}}}}",
+					pullDetailPageSize, graphqlString(cursors[i].parent))
+			}
+		} else {
+			fmt.Fprintf(&q, "number headRefOid headRefName baseRefName"+
+				" reviews(first:%d){nodes{author{login} state} pageInfo{hasNextPage endCursor}}"+
+				" headRef{target{oid ... on Commit{oid committedDate author{name}"+
+				" parents(first:%d){nodes{oid} pageInfo{hasNextPage endCursor}}}}}",
+				pullDetailPageSize, pullDetailPageSize)
+		}
+		q.WriteString("}")
+	}
+	q.WriteString("}}")
+	return q.String()
+}
+
+// pullDetailAliases validates the repository envelope and returns its aliases.
+func pullDetailAliases(data []byte) (map[string]json.RawMessage, error) {
+	var out struct {
+		Repository map[string]json.RawMessage `json:"repository"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, errors.New("GitHub GraphQL response was not the expected shape")
+	}
+	if out.Repository == nil {
+		return nil, errors.New("GitHub GraphQL returned no repository")
+	}
+	return out.Repository, nil
+}
+
+// nextCursor turns pageInfo into a follow-up request. A missing cursor with a
+// promised next page is an error, not a reason to stop early: stopping would
+// present a truncated list as complete.
+func nextCursor(info detailPageInfo, number int, what string) (string, bool, error) {
+	if !info.HasNextPage {
+		return "", false, nil
+	}
+	if info.EndCursor == "" {
+		return "", false, fmt.Errorf("GitHub GraphQL omitted the %s cursor for pull request %d", what, number)
+	}
+	return info.EndCursor, true, nil
+}
+
+func appendReviews(p *repo.PullRequest, nodes []detailReview) {
+	for _, n := range nodes {
+		author := ""
+		if n.Author != nil {
+			author = n.Author.Login
+		}
+		p.Reviews = append(p.Reviews, repo.Review{Author: author, State: strings.ToLower(n.State)})
+	}
+}
+
+func appendParents(parents []string, nodes []struct {
+	OID string `json:"oid"`
+}) []string {
+	for _, n := range nodes {
+		parents = append(parents, n.OID)
+	}
+	return parents
+}
+
 // fetchPullDetails fills per-PR review state and head-commit anchors through
-// batched aliased GraphQL queries. Each PR records at most the 10 most recent
-// reviews (reviews(last:10), the tail of GitHub's oldest-first connection) and
-// its head commit at most 3 parents; anything beyond those caps is absent from
-// the snapshot, and the caps are stated here and in the package README until
-// per-PR pagination reads the remainder. A PR that vanishes between list and
-// detail keeps its lane but gains no reviews; the whole call fails on server
-// errors.
+// batched aliased GraphQL queries. Each connection is read in pages of 100,
+// oldest first, with at most one follow-up page per batch; the snapshot holds
+// the complete history for every list GitHub returns within that bound. A
+// longer list fails the whole read instead of being truncated, and the
+// request count stays inside pullDetailPages per batch. A PR that vanishes
+// between list and detail keeps its lane but gains no reviews; the whole call
+// fails on server errors.
 func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
 	known := map[string]bool{}
 	for _, cm := range snap.Commits {
 		known[cm.SHA] = true
 	}
+	variables := map[string]any{"owner": opts.Owner, "name": opts.Repo}
 	for start := 0; start < len(snap.PullRequests); start += pullDetailBatch {
 		chunk := snap.PullRequests[start:min(start+pullDetailBatch, len(snap.PullRequests))]
-		var q strings.Builder
-		q.WriteString("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){")
-		for i, p := range chunk {
-			fmt.Fprintf(&q, "p%d:pullRequest(number:%d){number headRefOid headRefName baseRefName"+
-				" headRef{target{oid ... on Commit{oid committedDate author{name} parents(first:3){nodes{oid}}}}}"+
-				" reviews(last:10){nodes{author{login} state}}}", i, p.Number)
-		}
-		q.WriteString("}}")
-		data, err := c.GraphQL(ctx, q.String(), map[string]any{"owner": opts.Owner, "name": opts.Repo})
+		data, err := c.GraphQL(ctx, pullDetailQuery(chunk, nil), variables)
 		if err != nil {
 			return err
 		}
-		var out struct {
-			Repository map[string]json.RawMessage `json:"repository"`
+		aliases, err := pullDetailAliases(data)
+		if err != nil {
+			return err
 		}
-		if err := json.Unmarshal(data, &out); err != nil {
-			return errors.New("GitHub GraphQL response was not the expected shape")
-		}
-		if out.Repository == nil {
-			return errors.New("GitHub GraphQL returned no repository")
-		}
+		cursors := make([]detailCursor, len(chunk))
+		pending := false
 		for i := range chunk {
-			raw, ok := out.Repository[fmt.Sprintf("p%d", i)]
+			raw, ok := aliases[fmt.Sprintf("p%d", i)]
 			if !ok || string(raw) == "null" {
-				continue
+				continue // A PR that vanished between list and detail keeps its lane.
 			}
-			var d struct {
-				Number      int    `json:"number"`
-				HeadRefOid  string `json:"headRefOid"`
-				HeadRefName string `json:"headRefName"`
-				HeadRef     *struct {
-					Target json.RawMessage `json:"target"`
-				} `json:"headRef"`
-				Reviews struct {
-					Nodes []struct {
-						Author *struct {
-							Login string `json:"login"`
-						} `json:"author"`
-						State string `json:"state"`
-					} `json:"nodes"`
-				} `json:"reviews"`
-			}
+			var d pullDetail
 			if err := json.Unmarshal(raw, &d); err != nil {
 				return errors.New("GitHub GraphQL pull-request detail was not the expected shape")
 			}
@@ -428,39 +551,35 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 			if d.Number != p.Number {
 				return errors.New("GitHub GraphQL returned mismatched pull requests")
 			}
-			for _, n := range d.Reviews.Nodes {
-				author := ""
-				if n.Author != nil {
-					author = n.Author.Login
-				}
-				p.Reviews = append(p.Reviews, repo.Review{Author: author, State: strings.ToLower(n.State)})
+			reviewCursor, needReview, err := nextCursor(d.Reviews.PageInfo, p.Number, "reviews")
+			if err != nil {
+				return err
 			}
+			cursors[i].review, cursors[i].needReview = reviewCursor, needReview
+			if needReview {
+				pending = true
+			}
+			appendReviews(p, d.Reviews.Nodes)
 			if d.HeadRef == nil || string(d.HeadRef.Target) == "null" {
 				continue
 			}
-			var commit struct {
-				OID           string     `json:"oid"`
-				CommittedDate *time.Time `json:"committedDate"`
-				Author        *struct {
-					Name *string `json:"name"`
-				} `json:"author"`
-				Parents struct {
-					Nodes []struct {
-						OID string `json:"oid"`
-					} `json:"nodes"`
-				} `json:"parents"`
-			}
+			var commit commitDetail
 			if err := json.Unmarshal(d.HeadRef.Target, &commit); err != nil || commit.CommittedDate == nil || commit.OID == "" {
 				continue // A non-commit target or unknown date cannot anchor a lane.
 			}
 			if known[commit.OID] {
-				continue
+				continue // The REST commit list already carries this commit's parents.
 			}
 			known[commit.OID] = true
-			parents := make([]string, 0, len(commit.Parents.Nodes))
-			for _, n := range commit.Parents.Nodes {
-				parents = append(parents, n.OID)
+			parentCursor, needParent, err := nextCursor(commit.Parents.PageInfo, p.Number, "head-commit parents")
+			if err != nil {
+				return err
 			}
+			cursors[i].parent, cursors[i].needParent = parentCursor, needParent
+			if needParent {
+				pending = true
+			}
+			parents := appendParents(nil, commit.Parents.Nodes)
 			author := ""
 			if commit.Author != nil && commit.Author.Name != nil {
 				author = *commit.Author.Name
@@ -468,9 +587,60 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 			// The lane label comes from the REST list (fork-qualified for a
 			// fork pull request) so head and lane always agree, even if the
 			// branch is renamed between reads.
+			cursors[i].commitIndex = len(snap.Commits)
 			snap.Commits = append(snap.Commits, repo.Commit{
 				SHA: commit.OID, Parents: parents, Branch: p.Head, Author: author, Time: *commit.CommittedDate,
 			})
+		}
+		if !pending {
+			continue
+		}
+		data, err = c.GraphQL(ctx, pullDetailQuery(chunk, cursors), variables)
+		if err != nil {
+			return err
+		}
+		aliases, err = pullDetailAliases(data)
+		if err != nil {
+			return err
+		}
+		for i, cur := range cursors {
+			if !cur.needReview && !cur.needParent {
+				continue
+			}
+			p := &snap.PullRequests[start+i]
+			raw, ok := aliases[fmt.Sprintf("p%d", i)]
+			if !ok || string(raw) == "null" {
+				return fmt.Errorf("GitHub GraphQL lost pull request %d between detail pages", p.Number)
+			}
+			var d pullDetail
+			if err := json.Unmarshal(raw, &d); err != nil {
+				return errors.New("GitHub GraphQL pull-request detail was not the expected shape")
+			}
+			if d.Number != p.Number {
+				return errors.New("GitHub GraphQL returned mismatched pull requests")
+			}
+			if cur.needReview {
+				appendReviews(p, d.Reviews.Nodes)
+				if d.Reviews.PageInfo.HasNextPage {
+					return fmt.Errorf("GitHub pull request %d reviews exceed the %d-review limit", p.Number, pullDetailPageSize*pullDetailPages)
+				}
+			}
+			if cur.needParent {
+				if d.HeadRef == nil || string(d.HeadRef.Target) == "null" {
+					return fmt.Errorf("GitHub GraphQL lost pull request %d head commit between detail pages", p.Number)
+				}
+				var commit commitDetail
+				if err := json.Unmarshal(d.HeadRef.Target, &commit); err != nil || commit.OID == "" {
+					return errors.New("GitHub GraphQL pull-request head commit was not the expected shape")
+				}
+				if commit.OID != snap.Commits[cur.commitIndex].SHA {
+					return errors.New("GitHub GraphQL returned a mismatched head commit")
+				}
+				snap.Commits[cur.commitIndex].Parents = appendParents(snap.Commits[cur.commitIndex].Parents, commit.Parents.Nodes)
+				if commit.Parents.PageInfo.HasNextPage {
+					return fmt.Errorf("GitHub pull request %d head parents exceed the %d-parent limit", p.Number, pullDetailPageSize*pullDetailPages)
+				}
+			}
 		}
 	}
 	return nil

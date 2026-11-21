@@ -273,9 +273,10 @@ func TestWatchBadRepository(t *testing.T) {
 
 func sha(i int) string { return fmt.Sprintf("%040x", i) }
 
-func fakeGitHub(t *testing.T) *httptest.Server {
+func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/repos/acme/widgets":
@@ -299,9 +300,27 @@ func fakeGitHub(t *testing.T) *httptest.Server {
 			if !strings.Contains(string(body), "pullRequest(number:1)") {
 				t.Errorf("unexpected GraphQL query: %s", body)
 			}
-			fmt.Fprint(w, fmt.Sprintf(`{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
-				`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},"parents":{"nodes":[{"oid":"%s"}]}}},`+
-				`"reviews":{"nodes":[{"author":{"login":"sage"},"state":"APPROVED"}]}}}}}`, sha(4), sha(4), sha(2)))
+			// This one PR's GraphQL response exceeds the old 10-review and
+			// three-parent caps: the first page needs a follow-up for both
+			// connections, so a recording must join the pages to stay complete.
+			follow := strings.Contains(string(body), "after:")
+			first, last, parentFirst, parentLast := 0, 99, 0, 3
+			if follow {
+				first, last, parentFirst, parentLast = 100, 102, 4, 5
+			}
+			var reviews, parents []string
+			for i := first; i <= last; i++ {
+				reviews = append(reviews, fmt.Sprintf(`{"author":{"login":"reviewer-%d"},"state":"APPROVED"}`, i))
+			}
+			for i := parentFirst; i <= parentLast; i++ {
+				parents = append(parents, fmt.Sprintf(`{"oid":"%s"}`, sha(2000+i)))
+			}
+			more := !follow
+			fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
+				`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}},`+
+				`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
+				`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}}}`,
+				sha(4), strings.Join(reviews, ","), more, sha(4), strings.Join(parents, ","), more)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -309,7 +328,8 @@ func fakeGitHub(t *testing.T) *httptest.Server {
 }
 
 func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
-	server := fakeGitHub(t)
+	var calls int
+	server := fakeGitHub(t, &calls)
 	defer server.Close()
 	t.Setenv("GITHUB_TOKEN", "test-token")
 	t.Setenv("PERCOLATE_GITHUB_URL", server.URL)
@@ -339,12 +359,30 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		t.Fatalf("recording is not a snapshot: %v", err)
 	}
-	if len(snap.PullRequests) != 1 || len(snap.PullRequests[0].Reviews) != 1 ||
-		snap.PullRequests[0].Reviews[0].Author != "sage" {
-		t.Fatalf("reviews missing from recording: %+v", snap.PullRequests)
+	// The recording must hold both pages of the one long PR, not a tail: 103
+	// reviews in order and the head commit's six parents in order.
+	pr := snap.PullRequests[0]
+	if len(snap.PullRequests) != 1 || len(pr.Reviews) != 103 ||
+		pr.Reviews[0].Author != "reviewer-0" || pr.Reviews[99].Author != "reviewer-99" ||
+		pr.Reviews[100].Author != "reviewer-100" || pr.Reviews[102].State != "approved" {
+		t.Fatalf("reviews not complete in recording: %d, first=%+v last=%+v", len(pr.Reviews), pr.Reviews[0], pr.Reviews[102])
+	}
+	var head repo.Commit
+	for _, cm := range snap.Commits {
+		if cm.SHA == sha(4) {
+			head = cm
+		}
+	}
+	if len(head.Parents) != 6 || head.Parents[0] != sha(2000) || head.Parents[5] != sha(2005) {
+		t.Fatalf("head parents not complete in recording: %+v", head.Parents)
 	}
 	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
 		t.Fatalf("unexpected objects: %+v", snap)
+	}
+	// 227 is the documented worst-case plan for default options. This short
+	// read costs one page per list plus two detail pages for the one batch.
+	if calls > 227 || calls >= 250 {
+		t.Fatalf("record→replay used %d requests, over the 227-request plan and 250-request budget", calls)
 	}
 }
 

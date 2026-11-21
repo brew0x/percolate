@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/brew0x/percolate/internal/repo"
 )
 
 func sha(i int) string { return fmt.Sprintf("%040x", i) }
@@ -291,15 +294,114 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 }
 
 // Keep the worst-case request count in the docs checkable: 1 meta + 11 branch
-// + 51 commit + 11 pull + 51 run + 11 release + 11 deployment pages + 40
-// detail queries, all inside the 250-request budget.
+// + 51 commit + 11 pull + 51 run + 11 release + 11 deployment pages + 80
+// detail queries (a first page and one follow-up for each of 40 batches), all
+// inside the 250-request budget.
 func TestDefaultPlannedRequests(t *testing.T) {
 	opts := DefaultSnapshotOptions("acme", "widgets")
-	if got := opts.plannedRequests(); got != 187 {
-		t.Fatalf("plannedRequests()=%d, want the documented 187", got)
+	if got := opts.plannedRequests(); got != 227 {
+		t.Fatalf("plannedRequests()=%d, want the documented 227", got)
 	}
-	if 187 > opts.MaxRequests {
+	if 227 > opts.MaxRequests {
 		t.Fatal("documented plan exceeds the default request budget")
+	}
+}
+
+// paginatedDetails answers the first detail page and one follow-up for a
+// single pull request with more than 100 reviews and more than three parents.
+// The values are generated, but they are served through the same GraphQL seam
+// a real read uses: the test proves the client reads and joins both pages.
+func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.HandlerFunc {
+	t.Helper()
+	inner, _ := fakeRepo(t, 1)
+	defer inner.Close()
+	serverHandler := inner.Config.Handler
+	return func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		if r.URL.Path != "/graphql" {
+			serverHandler.ServeHTTP(w, r)
+			return
+		}
+		*graphqlCalls++
+		body, _ := io.ReadAll(r.Body)
+		follow := strings.Contains(string(body), "after:")
+		if mode == "follow-error" && follow {
+			_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
+			return
+		}
+		var reviews, parents []string
+		more := !follow
+		first, last := 0, 99
+		parentFirst, parentLast := 0, 3
+		if follow {
+			first, last = 100, 102
+			parentFirst, parentLast = 4, 5
+			more = mode == "third-page"
+		}
+		for i := first; i <= last; i++ {
+			reviews = append(reviews, fmt.Sprintf(`{"author":{"login":"reviewer-%d"},"state":"APPROVED"}`, i))
+		}
+		for i := parentFirst; i <= parentLast; i++ {
+			parents = append(parents, fmt.Sprintf(`{"oid":"%s"}`, sha(2000+i)))
+		}
+		cursor := ""
+		if more {
+			cursor = "next"
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,`+
+			`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}},`+
+			`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},`+
+			`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}}}}}}}}`,
+			strings.Join(reviews, ","), more, cursor, sha(1001), strings.Join(parents, ","), more, cursor)
+	}
+}
+
+// A PR with 103 reviews and six head parents reads both pages in order, joins
+// them into complete lists and stays inside the documented request plan.
+func TestBuildSnapshotPaginatesPullDetails(t *testing.T) {
+	for _, mode := range []string{"ok", "follow-error", "third-page"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls, graphqlCalls int
+			server := httptest.NewServer(paginatedDetails(t, &calls, &graphqlCalls, mode))
+			defer server.Close()
+			c, _ := NewClient("test-token")
+			c.baseURL = server.URL
+			opts := DefaultSnapshotOptions("acme", "widgets")
+			snap, err := c.BuildSnapshot(context.Background(), opts)
+			if mode != "ok" {
+				if err == nil {
+					t.Fatal("accepted a failed follow-up page")
+				}
+				if !snap.Now.IsZero() || len(snap.Commits)+len(snap.PullRequests) != 0 {
+					t.Fatal("partial snapshot returned")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := snap.PullRequests[0]
+			if len(pr.Reviews) != 103 || pr.Reviews[0].Author != "reviewer-0" ||
+				pr.Reviews[99].Author != "reviewer-99" || pr.Reviews[100].Author != "reviewer-100" ||
+				pr.Reviews[102].State != "approved" {
+				t.Fatalf("reviews not complete: %d, first=%+v last=%+v", len(pr.Reviews), pr.Reviews[0], pr.Reviews[102])
+			}
+			var head repo.Commit
+			for _, cm := range snap.Commits {
+				if cm.SHA == sha(1001) {
+					head = cm
+				}
+			}
+			if len(head.Parents) != 6 || head.Parents[0] != sha(2000) || head.Parents[5] != sha(2005) {
+				t.Fatalf("parents not complete: %+v", head.Parents)
+			}
+			if graphqlCalls != 2 {
+				t.Fatalf("GraphQL requests=%d, want 2 detail pages", graphqlCalls)
+			}
+			if calls > opts.plannedRequests() || calls > opts.MaxRequests {
+				t.Fatalf("requests=%d over plan %d or budget %d", calls, opts.plannedRequests(), opts.MaxRequests)
+			}
+		})
 	}
 }
 
