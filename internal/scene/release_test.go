@@ -186,3 +186,110 @@ func TestReleaseWithoutArtifactsSaysSo(t *testing.T) {
 		t.Fatalf("invented artifacts: %+v", m.Artifacts)
 	}
 }
+
+// A release leaving a refresh must not hold its artifact row hostage. The
+// replacement writes that row as soon as it draws, on the same surviving-wins
+// rule the release row already follows, throughout the fade.
+func TestSurvivingArtifactReplacesFadingArtifact(t *testing.T) {
+	const sha = "1111111111111111111111111111111111111111"
+	prev := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha, Branch: "main"}},
+		Releases: []repo.Release{{Tag: "v1", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "old.bin"}}}},
+	}
+	next := prev
+	next.Releases = []repo.Release{{Tag: "v2", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "new.bin"}}}}
+	for _, frame := range []int{0, 8, 16, 31} {
+		g := scene.Frame(scene.Transition(prev, next, frame), frame, 60, 20)
+		if got := rowText(g[17]); got != "▤ new.bin" {
+			t.Fatalf("frame %d artifact row = %q, want %q\n%s", frame, got, "▤ new.bin", g.String())
+		}
+	}
+}
+
+// A shorter surviving name must clear the tail of a longer departing one: a
+// half-overwritten filename would cite no recorded artifact.
+func TestSurvivingArtifactClearsLongerFadingName(t *testing.T) {
+	const sha = "1111111111111111111111111111111111111111"
+	prev := repo.Snapshot{
+		Branches: []repo.Branch{{Name: "main"}},
+		Commits:  []repo.Commit{{SHA: sha, Branch: "main"}},
+		Releases: []repo.Release{{Tag: "v1", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "old-long-name.bin"}}}},
+	}
+	next := prev
+	next.Releases = []repo.Release{{Tag: "v2", HeadSHA: sha, Artifacts: []repo.Artifact{{Name: "new.bin"}}}}
+	g := scene.Frame(scene.Transition(prev, next, 8), 8, 60, 20)
+	if got := rowText(g[17]); got != "▤ new.bin" {
+		t.Fatalf("artifact row = %q, want %q\n%s", got, "▤ new.bin", g.String())
+	}
+}
+
+// Two releases can share a lane when their head commits sit on one branch. On
+// a weighted narrow column both strips overflow into the same cell below them:
+// a later release with only healthy omissions must not cover an earlier real
+// failure, and the mark must name the deployment it still reports.
+func TestOverflowMarkKeepsFailureAcrossReleases(t *testing.T) {
+	const oldSHA, newSHA = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	branches := []repo.Branch{{Name: "main"}}
+	for i := 1; i < 13; i++ {
+		branches = append(branches, repo.Branch{Name: fmt.Sprintf("lane-%d", i)})
+	}
+	prev := repo.Snapshot{
+		Branches: branches,
+		Commits:  []repo.Commit{{SHA: oldSHA, Branch: "main"}},
+		Releases: []repo.Release{{Tag: "v1", HeadSHA: oldSHA}},
+	}
+	for i := int64(1); i <= 4; i++ {
+		state := "success"
+		if i == 4 {
+			state = "failure"
+		}
+		prev.Deployments = append(prev.Deployments, repo.Deployment{ID: i, HeadSHA: oldSHA, Environment: "env", State: state})
+	}
+	next := prev
+	next.Commits = append([]repo.Commit(nil), prev.Commits...)
+	next.Commits = append(next.Commits, repo.Commit{SHA: newSHA, Branch: "main", Parents: []string{oldSHA}})
+	next.Releases = append([]repo.Release(nil), prev.Releases...)
+	next.Releases = append(next.Releases, repo.Release{Tag: "v2", HeadSHA: newSHA})
+	next.Deployments = append([]repo.Deployment(nil), prev.Deployments...)
+	for i := int64(5); i <= 8; i++ {
+		next.Deployments = append(next.Deployments, repo.Deployment{ID: i, HeadSHA: newSHA, Environment: "env", State: "success"})
+	}
+
+	g, owners := scene.FrameWithOwners(scene.Transition(prev, next, 8), 8, 60, 20)
+	marks := 0
+	for y, row := range g {
+		for x, c := range row {
+			if c.Rune != '!' {
+				continue
+			}
+			marks++
+			if c.Style != scene.Fail || owners[y][x] != "deployment:4" {
+				t.Fatalf("overflow mark = %+v, owner %q, want fail palette naming deployment:4\n%s", c, owners[y][x], g.String())
+			}
+		}
+	}
+	if marks != 1 {
+		t.Fatalf("got %d overflow marks, want one\n%s", marks, g.String())
+	}
+}
+
+// A branch cut off by the strip is omitted whole. Leaving its connector would
+// draw a '─' that names no deployment at all.
+func TestTruncatedBranchKeepsConnectorWithGlyph(t *testing.T) {
+	const sha = "1111111111111111111111111111111111111111"
+	s := repo.Snapshot{
+		Branches:    []repo.Branch{{Name: "main"}},
+		Commits:     []repo.Commit{{SHA: sha, Branch: "main"}},
+		Releases:    []repo.Release{{Tag: "v1", HeadSHA: sha}},
+		Deployments: make([]repo.Deployment, 0, 4),
+	}
+	for i := int64(1); i <= 4; i++ {
+		s.Deployments = append(s.Deployments, repo.Deployment{ID: i, HeadSHA: sha, Environment: "env", State: "success"})
+	}
+	g := scene.Frame(scene.Build(s), 0, 20, 20)
+	row := rowText(g[18])
+	if strings.HasSuffix(row, "─") || strings.Count(row, "─") != strings.Count(row, "▣") {
+		t.Fatalf("dangling connector in %q\n%s", row, g.String())
+	}
+}

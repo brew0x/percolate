@@ -102,13 +102,40 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			own(x, y, c.owner)
 		}
 	}
-	empty := func(x, y int) bool {
-		return x >= 0 && x < v.width && y >= 0 && y < v.height && g[y][x].Rune == ' '
+	// artifactCells holds artifact runs written this frame. A later pass may
+	// claim one of these cells — a surviving release wins over a fading one —
+	// but a path, flow or any other recorded mark keeps its cell.
+	artifactCells := map[[2]int]bool{}
+	artifactFree := func(x, y int) bool {
+		if x < 0 || x >= v.width || y < 0 || y >= v.height {
+			return false
+		}
+		return g[y][x].Rune == ' ' || artifactCells[[2]int{x, y}]
+	}
+	// clearArtifacts erases an earlier run on the same row before a new one is
+	// drawn, so a shorter surviving name cannot leave the tail of a longer
+	// departing name behind.
+	clearArtifacts := func(x, y, upto int) {
+		for xx := x; xx < upto && xx < v.width; xx++ {
+			key := [2]int{xx, y}
+			if artifactCells[key] {
+				g[y][xx] = Cell{' ', Plain}
+				own(xx, y, "")
+				delete(artifactCells, key)
+			}
+		}
 	}
 	// reserved holds cells owned by a surviving mark. A departing release may
 	// be covered by a deployment that stays, but nothing that stays may be
 	// covered by something on its way out.
 	reserved := map[[2]int]bool{}
+	// overflow keeps a hidden failure at a shared cell: a later release whose
+	// own omissions are all healthy must not cover an earlier failure's mark.
+	type overflowMark struct {
+		style Style
+		owner string
+	}
+	overflow := map[[2]int]overflowMark{}
 
 	linked := map[string][]Mark{}
 	var alone []Mark
@@ -175,12 +202,20 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 		}
 		omitted := 0
 		if len(cells) > limit {
-			for _, c := range cells[limit:] {
-				if c.rune == '▣' {
-					omitted++
+			// Names are gone here, so every branch is a space, a connector
+			// and a glyph. Drop a branch whose glyph does not fit as a whole:
+			// a cut between '─' and '▣' would name no deployment at all.
+			cut := limit
+			for i, c := range cells {
+				if c.rune != '▣' || i < limit {
+					continue
 				}
+				if omitted == 0 {
+					cut = i - 2 // the branch's leading space
+				}
+				omitted++
 			}
-			cells = cells[:limit]
+			cells = cells[:max(0, min(cut, limit))]
 		}
 		for i, c := range cells {
 			put(x+i, row, c)
@@ -189,22 +224,33 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			}
 		}
 		if omitted > 0 {
-			mark := Faded
+			mark := overflowMark{Faded, m.ID}
 			for _, d := range deps[len(deps)-omitted:] {
 				if d.Style == Fail {
-					mark = Fail
+					mark = overflowMark{Fail, d.ID}
 					break
 				}
 			}
-			put(x, row+1, releaseCell{'!', mark, ""})
+			cell := [2]int{x, row + 1}
+			// Several releases on one lane may overflow into the same cell
+			// during a fade. A recorded failure keeps its mark and the
+			// deployment that names it; only healthy omissions may be covered.
+			if prior, ok := overflow[cell]; ok && prior.style == Fail && mark.style != Fail {
+				mark = prior
+			} else if mark.style == Fail {
+				overflow[cell] = mark
+			}
+			put(x, row+1, releaseCell{'!', mark.style, mark.owner})
 		}
 	}
 
 	// Artifacts stack in the free rows above their release, one per row in
 	// snapshot order. Rows at or above the commit region belong to the commits
 	// and PR flows, so they are never claimed. An artifact draws only when its
-	// whole run is free: a path or flow keeps its cell and no half-overwritten
-	// name can be read as a different artifact. The complete list is in details.
+	// whole run is free of recorded marks: a path or flow keeps its cell and no
+	// half-overwritten name can be read as a different artifact. Another
+	// artifact's run from an earlier pass may be replaced, so a surviving
+	// release wins its row over one on its way out. The full list is in details.
 	drawArtifacts := func(m Mark, pass int) {
 		if passOf(m) != pass || len(m.Artifacts) == 0 {
 			return
@@ -229,7 +275,7 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			}
 			free := true
 			for j := range run {
-				if !empty(x+j, y) {
+				if !artifactFree(x+j, y) {
 					free = false
 					break
 				}
@@ -237,8 +283,10 @@ func drawReleases(g Grid, s Scene, v releaseView, own func(int, int, string)) {
 			if !free {
 				continue
 			}
+			clearArtifacts(x, y, x+v.widthOf(m.Lane))
 			for j, c := range run {
 				put(x+j, y, c)
+				artifactCells[[2]int{x + j, y}] = true
 			}
 		}
 	}
