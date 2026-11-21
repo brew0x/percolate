@@ -265,6 +265,31 @@ func TestGeneratedFixture(t *testing.T) {
 	}
 }
 
+// A compact frame puts a pull request's number-label row on the lane names.
+// A branch name is recorded data too: the number must not paint a hybrid that
+// names no object. Taller frames still label the flow, and the compact frame
+// keeps the diamond and its details.
+func TestCompactFrameKeepsLaneNames(t *testing.T) {
+	s := scene.Build(fixture(t, "small"))
+	compact := scene.Frame(s, 0, 60, 7)
+	names := strings.Split(compact.String(), "\n")[2]
+	for _, name := range []string{"main", "flow-01", "flow-02"} {
+		if !strings.Contains(names, name) {
+			t.Fatalf("compact frame lost the lane name %q: %q", name, names)
+		}
+	}
+	if strings.Contains(names, "#") {
+		t.Fatalf("compact frame painted a PR number over a lane name: %q", names)
+	}
+	if !strings.ContainsRune(compact.String(), '◇') {
+		t.Fatal("compact frame lost the PR diamond")
+	}
+	tall := scene.Frame(s, 0, 60, 20)
+	if !strings.Contains(tall.String(), "#1") {
+		t.Fatal("a frame with room lost the PR number label")
+	}
+}
+
 // Every junction comes from a known parent, even with missing history and PRs.
 func TestParentPaths(t *testing.T) {
 	now := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
