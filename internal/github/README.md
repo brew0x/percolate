@@ -38,31 +38,42 @@ line; bodies and tokens never appear in errors.
 
 `Client.BuildSnapshot(ctx, SnapshotOptions)` assembles a `repo.Snapshot`
 from bounded REST lists (repository meta, branches, default-branch commits,
-open pull requests, workflow runs, releases, deployments) and batched aliased
-GraphQL queries that fill per-PR reviews and head-commit anchors (25 PRs per
-query). Defaults bound one read to recent history: 1000 open pull requests,
-5000 default-branch commits, 5000 workflow runs and 1000 branches, releases
-and deployments each. The worst-case plan is 227 requests `plannedRequests()`
-(1 meta, 147 list pages and 80 detail queries: a first page plus one follow-up
-for each of the 40 batches), under the 250-request budget and the 300-request
-budget promised for #3; short collections cost fewer (the 500-item fixture
-measures 49). A plan that exceeds its budget is rejected before any request.
+open issues, open pull requests, workflow runs, releases, deployments) and
+batched aliased GraphQL queries that fill per-PR reviews, closing issue
+references and head-commit anchors (25 PRs per query). Defaults bound one read
+to recent history: 1000 open issues and pull requests, 5000 default-branch
+commits, 5000 workflow runs and 1000 branches, releases and deployments each.
+The worst-case plan is 238 requests `plannedRequests()` (1 meta, 157 list pages
+and 80 detail queries: a first page plus one follow-up for each of the 40
+batches), under the 250-request budget and the 300-request budget promised for
+#3; short collections cost fewer (the 500-item local fake measures 55). A plan
+that exceeds its budget is rejected before any request.
 Every list read enforces its item cap as well as its page count, so a repository
 with more items than a cap fails with one line instead of truncating its
 history. Any failure returns no snapshot, and a PR that disappears between the
 list and its detail query keeps its lane but gains no reviews.
 
-Each PR detail reads the whole review history and the head commit's parent
-list through GraphQL connections in 100-item pages, oldest first, with at most
-one follow-up page per batch. The follow-up asks for the head commit's `oid` as
-well as the next parent page, so the join can verify that both pages describe
-the same commit; a follow-up that loses that identity fails the whole read.
-The snapshot states the complete lists it read, up to 200 reviews and 200
-parents per PR; a connection with a third page fails the whole read rather than
-being truncated into a plausible-looking history. The same bound covers the
-cursor-less page case: a promised next page with no cursor is an error. The
-result is a point-in-time view: objects can change between pages, and list
-ETags only deduplicate identical repeat reads.
+Each PR detail reads the whole review history, closing issue references and
+the head commit's parent list through GraphQL connections in 100-item pages,
+oldest first, with at most one follow-up page per batch. The follow-up asks for
+the head commit's `oid` as well as the next parent page, so the join can verify
+that both pages describe the same commit; a follow-up that loses that identity
+fails the whole read. The snapshot states the complete lists it read, up to 200
+reviews, 200 closing references and 200 parents per PR; a connection with a
+third page fails the whole read rather than being truncated into a
+plausible-looking history. The same bound covers the cursor-less page case: a
+promised next page with no cursor is an error. The result is a point-in-time
+view: objects can change between pages, and list ETags only deduplicate
+identical repeat reads.
+
+GitHub's `/issues` endpoint returns pull requests too, because both share one
+number sequence; each PR carries a `pull_request` object. Those items, and
+anything not reported open, are filtered before the cap check so a PR never
+becomes a spring or consumes the issue budget. An issue's `closed_by` is filled
+only from a PR's `closingIssuesReferences` node naming that exact open issue;
+a PR-shaped list item, issue text, a nearby number or a reference to an issue
+that is not in the snapshot never creates a link. Closing references add no
+request beyond the batched detail queries.
 
 A fork pull request's head lane uses GitHub's fork-qualified `head.label` (for
 example `alice:main`) when its head repository differs from the one being read;
@@ -104,6 +115,23 @@ arriving as missing snapshot data and a dropped first-page `number` failing
 the REST/GraphQL pull-request match. A wrong field or alias therefore fails
 `make check` here; that is not the same as a live GraphQL response having been
 decoded.
+
+The issue and closing-reference shape is proven both offline and by a public
+recording: the field-aware GraphQL fake returns only selected
+`closingIssuesReferences` nodes, `TestPullDetailQuerySelections` pins their
+alias and arguments, `TestBuildSnapshotReadsOpenIssuesAndRealClosingReferences`
+checks that a PR list item and a closed issue are excluded and that only a real
+reference fills `closed_by`, and the typo test shows a dropped field reaching
+the snapshot as an unlinked spring.
+`testdata/fixtures/recorded-issues.json` is a real public snapshot of
+`tmux-python/libtmux` read through unauthenticated REST: it carries a feeding
+issue (#863, closed by open PR #901), two unlinked issues (#886 and #884) and
+their reviewed golden frames. Its `closed_by` comes from GitHub's REST issue
+timeline cross-reference plus PR #901's closing keyword, not from numbering or
+proximity; the live read still fills `closed_by` only from a GraphQL
+`closingIssuesReferences` node. That connection needs a token, so the recording
+proves the JSON and golden shape rather than a live GraphQL decode; provenance
+and the exact source endpoints are in `testdata/fixtures/README.md`.
 
 Tests use local httptest servers and injected credential-helper output. They
 require no GitHub access, real credentials, or changes to rendering. The

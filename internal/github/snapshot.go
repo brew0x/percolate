@@ -39,6 +39,7 @@ type SnapshotOptions struct {
 	MaxRequests     int
 	MaxBranches     int
 	MaxCommits      int
+	MaxIssues       int
 	MaxPullRequests int
 	MaxRuns         int
 	MaxReleases     int
@@ -46,12 +47,13 @@ type SnapshotOptions struct {
 }
 
 // DefaultSnapshotOptions bounds one read to recent history: up to 1000 open
-// pull requests, 5000 default-branch commits, 5000 workflow runs and 1000 of
-// each other list. These are generous enough for an active repository; a read
-// that still exceeds one is a clear error, never a partial snapshot. The worst
-// case is 227 requests, under the 250-request budget (and the 300-request
-// budget promised for #3); a short collection costs fewer because each list
-// stops at its first short page. The limits hold for owner/repo in README.md.
+// issues and pull requests, 5000 default-branch commits, 5000 workflow runs and
+// 1000 branches, releases and deployments. These are generous enough for an
+// active repository; a read that still exceeds one is a clear error, never a
+// partial snapshot. The worst case is 238 requests, under the 250-request
+// budget (and the 300-request budget promised for #3); a short collection costs
+// fewer because each list stops at its first short page. The limits hold for
+// owner/repo in README.md.
 func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 	return SnapshotOptions{
 		Owner:           owner,
@@ -59,6 +61,7 @@ func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 		MaxRequests:     250,
 		MaxBranches:     10 * pageSize,
 		MaxCommits:      50 * pageSize,
+		MaxIssues:       10 * pageSize,
 		MaxPullRequests: 10 * pageSize,
 		MaxRuns:         50 * pageSize,
 		MaxReleases:     10 * pageSize,
@@ -80,8 +83,9 @@ func pages(items int) int { return items/pageSize + 1 }
 func (o SnapshotOptions) plannedRequests() int {
 	batches := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
 	detail := pullDetailPages * batches
-	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxPullRequests) +
-		pages(o.MaxRuns) + pages(o.MaxReleases) + pages(o.MaxDeployments) + detail
+	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxIssues) +
+		pages(o.MaxPullRequests) + pages(o.MaxRuns) + pages(o.MaxReleases) +
+		pages(o.MaxDeployments) + detail
 }
 
 // BuildSnapshot assembles repo.Snapshot from REST list reads and batched
@@ -112,6 +116,9 @@ func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.
 		if err := c.listCommits(ctx, opts, meta.DefaultBranch, &snap); err != nil {
 			return repo.Snapshot{}, err
 		}
+	}
+	if err := c.listIssues(ctx, opts, &snap); err != nil {
+		return repo.Snapshot{}, err
 	}
 	if err := c.listPullRequests(ctx, opts, &snap); err != nil {
 		return repo.Snapshot{}, err
@@ -227,6 +234,41 @@ func (c *Client) listCommits(ctx context.Context, opts SnapshotOptions, branch s
 			parents = append(parents, p.SHA)
 		}
 		snap.Commits = append(snap.Commits, repo.Commit{SHA: cm.SHA, Parents: parents, Branch: branch, Author: author, Time: when})
+	}
+	return nil
+}
+
+// listIssues reads open issues from GitHub's issues endpoint. That endpoint
+// shares its number sequence with pull requests and returns both: each pull
+// request carries a pull_request object. Those objects are filtered before the
+// cap check, so a PR neither becomes a spring nor consumes the issue budget.
+// Only an issue GitHub reports as open enters the snapshot; a closing link is
+// filled later from a real closing reference, never from title or numbering.
+func (c *Client) listIssues(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
+	var src []struct {
+		Number      int             `json:"number"`
+		Title       string          `json:"title"`
+		State       string          `json:"state"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	}
+	if err := c.listInto(ctx, opts.repoPath("/issues?state=open"), pages(opts.MaxIssues), &src); err != nil {
+		return err
+	}
+	open := src[:0]
+	for _, issue := range src {
+		if issue.State != "open" {
+			continue
+		}
+		if len(issue.PullRequest) > 0 && strings.TrimSpace(string(issue.PullRequest)) != "null" {
+			continue
+		}
+		open = append(open, issue)
+	}
+	if len(open) > opts.MaxIssues {
+		return fmt.Errorf("GitHub open issues exceed the %d-issue limit", opts.MaxIssues)
+	}
+	for _, issue := range open {
+		snap.Issues = append(snap.Issues, repo.Issue{Number: issue.Number, Title: issue.Title, State: issue.State})
 	}
 	return nil
 }
@@ -377,8 +419,8 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 	return nil
 }
 
-// detailPageInfo is the GraphQL cursor state for a reviews or parents
-// connection. A cursor is only followed when hasNextPage is true.
+// detailPageInfo is the GraphQL cursor state for a reviews, closing-issue or
+// parents connection. A cursor is only followed when hasNextPage is true.
 type detailPageInfo struct {
 	HasNextPage bool   `json:"hasNextPage"`
 	EndCursor   string `json:"endCursor"`
@@ -398,12 +440,22 @@ type detailParents struct {
 	PageInfo detailPageInfo `json:"pageInfo"`
 }
 
+// closingIssueNode is one node of a pull request's closingIssuesReferences
+// connection. A null node is not a reference and is skipped.
+type closingIssueNode struct {
+	Number int `json:"number"`
+}
+
 type pullDetail struct {
 	Number  int `json:"number"`
 	Reviews struct {
 		Nodes    []detailReview `json:"nodes"`
 		PageInfo detailPageInfo `json:"pageInfo"`
 	} `json:"reviews"`
+	ClosingIssues struct {
+		Nodes    []*closingIssueNode `json:"nodes"`
+		PageInfo detailPageInfo      `json:"pageInfo"`
+	} `json:"closingIssuesReferences"`
 	HeadRef *struct {
 		Target json.RawMessage `json:"target"`
 	} `json:"headRef"`
@@ -422,9 +474,9 @@ type commitDetail struct {
 // flags mean the first page; a follow-up asks only for the connections that
 // reported another page, carrying that connection's opaque cursor.
 type detailCursor struct {
-	review, parent         string
-	needReview, needParent bool
-	commitIndex            int // where the head commit was appended, to extend its parents
+	review, parent, closing             string
+	needReview, needParent, needClosing bool
+	commitIndex                         int // where the head commit was appended, to extend its parents
 }
 
 // graphqlString quotes an opaque cursor as a GraphQL string literal. Cursors
@@ -435,19 +487,23 @@ func graphqlString(s string) string {
 	return string(quoted)
 }
 
-// pullDetailQuery builds one batched query. The first page reads both review
-// and parent connections in full-page steps; a follow-up reads only the
-// connections whose pageInfo asked for another page.
+// pullDetailQuery builds one batched query. The first page reads the review,
+// closing-issue-reference and parent connections in full-page steps; a
+// follow-up reads only the connections whose pageInfo asked for another page.
 func pullDetailQuery(chunk []repo.PullRequest, cursors []detailCursor) string {
 	var q strings.Builder
 	q.WriteString("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){")
 	for i, p := range chunk {
 		fmt.Fprintf(&q, "p%d:pullRequest(number:%d){", i, p.Number)
-		if i < len(cursors) && (cursors[i].needReview || cursors[i].needParent) {
+		if i < len(cursors) && (cursors[i].needReview || cursors[i].needParent || cursors[i].needClosing) {
 			q.WriteString("number ")
 			if cursors[i].needReview {
 				fmt.Fprintf(&q, "reviews(first:%d,after:%s){nodes{author{login} state} pageInfo{hasNextPage endCursor}} ",
 					pullDetailPageSize, graphqlString(cursors[i].review))
+			}
+			if cursors[i].needClosing {
+				fmt.Fprintf(&q, "closingIssuesReferences(first:%d,after:%s){nodes{number} pageInfo{hasNextPage endCursor}} ",
+					pullDetailPageSize, graphqlString(cursors[i].closing))
 			}
 			if cursors[i].needParent {
 				// oid is requested on both the GitObject target and the Commit
@@ -461,9 +517,10 @@ func pullDetailQuery(chunk []repo.PullRequest, cursors []detailCursor) string {
 		} else {
 			fmt.Fprintf(&q, "number headRefOid headRefName baseRefName"+
 				" reviews(first:%d){nodes{author{login} state} pageInfo{hasNextPage endCursor}}"+
+				" closingIssuesReferences(first:%d){nodes{number} pageInfo{hasNextPage endCursor}}"+
 				" headRef{target{oid ... on Commit{oid committedDate author{name}"+
 				" parents(first:%d){nodes{oid} pageInfo{hasNextPage endCursor}}}}}",
-				pullDetailPageSize, pullDetailPageSize)
+				pullDetailPageSize, pullDetailPageSize, pullDetailPageSize)
 		}
 		q.WriteString("}")
 	}
@@ -508,6 +565,22 @@ func appendReviews(p *repo.PullRequest, nodes []detailReview) {
 	}
 }
 
+// appendClosingReferences records issue numbers named by a pull request's
+// closingIssuesReferences connection. A reference is the only source of an
+// issue's ClosedBy: the first PR naming an issue in snapshot order owns the
+// link, so a later duplicate cannot silently reassign it. Numbers with no
+// matching open issue are ignored when the links are applied.
+func appendClosingReferences(refs map[int]int, nodes []*closingIssueNode, prNumber int) {
+	for _, node := range nodes {
+		if node == nil || node.Number <= 0 {
+			continue
+		}
+		if _, seen := refs[node.Number]; !seen {
+			refs[node.Number] = prNumber
+		}
+	}
+}
+
 func appendParents(parents []string, nodes []struct {
 	OID string `json:"oid"`
 }) []string {
@@ -517,16 +590,19 @@ func appendParents(parents []string, nodes []struct {
 	return parents
 }
 
-// fetchPullDetails fills per-PR review state and head-commit anchors through
-// batched aliased GraphQL queries. Each connection is read in pages of 100,
-// oldest first, with at most one follow-up page per batch; the snapshot holds
-// the complete history for every list GitHub returns within that bound. A
-// longer list fails the whole read instead of being truncated, and the
-// request count stays inside pullDetailPages per batch. A PR that vanishes
-// between list and detail keeps its lane but gains no reviews; the whole call
+// fetchPullDetails fills per-PR review state, closing issue references and
+// head-commit anchors through batched aliased GraphQL queries. Each connection
+// is read in pages of 100, oldest first, with at most one follow-up page per
+// batch; the snapshot holds the complete history for every list GitHub returns
+// within that bound. A longer list fails the whole read instead of being
+// truncated, and the request count stays inside pullDetailPages per batch. A
+// closing reference only fills ClosedBy on an open issue GitHub actually
+// returned; a number with no matching issue stays unlinked. A PR that vanishes
+// between list and detail keeps its lane but gains no details; the whole call
 // fails on server errors.
 func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
 	known := map[string]bool{}
+	closingByIssue := map[int]int{}
 	for _, cm := range snap.Commits {
 		known[cm.SHA] = true
 	}
@@ -565,6 +641,15 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 				pending = true
 			}
 			appendReviews(p, d.Reviews.Nodes)
+			closingCursor, needClosing, err := nextCursor(d.ClosingIssues.PageInfo, p.Number, "closing issue references")
+			if err != nil {
+				return err
+			}
+			cursors[i].closing, cursors[i].needClosing = closingCursor, needClosing
+			if needClosing {
+				pending = true
+			}
+			appendClosingReferences(closingByIssue, d.ClosingIssues.Nodes, p.Number)
 			if d.HeadRef == nil || string(d.HeadRef.Target) == "null" {
 				continue
 			}
@@ -609,7 +694,7 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 			return err
 		}
 		for i, cur := range cursors {
-			if !cur.needReview && !cur.needParent {
+			if !cur.needReview && !cur.needParent && !cur.needClosing {
 				continue
 			}
 			p := &snap.PullRequests[start+i]
@@ -630,6 +715,12 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 					return fmt.Errorf("GitHub pull request %d reviews exceed the %d-review limit", p.Number, pullDetailPageSize*pullDetailPages)
 				}
 			}
+			if cur.needClosing {
+				appendClosingReferences(closingByIssue, d.ClosingIssues.Nodes, p.Number)
+				if d.ClosingIssues.PageInfo.HasNextPage {
+					return fmt.Errorf("GitHub pull request %d closing issue references exceed the %d-issue limit", p.Number, pullDetailPageSize*pullDetailPages)
+				}
+			}
 			if cur.needParent {
 				if d.HeadRef == nil || string(d.HeadRef.Target) == "null" {
 					return fmt.Errorf("GitHub GraphQL lost pull request %d head commit between detail pages", p.Number)
@@ -646,6 +737,14 @@ func (c *Client) fetchPullDetails(ctx context.Context, opts SnapshotOptions, sna
 					return fmt.Errorf("GitHub pull request %d head parents exceed the %d-parent limit", p.Number, pullDetailPageSize*pullDetailPages)
 				}
 			}
+		}
+	}
+	// A reference names an issue only when GitHub returned that issue as part
+	// of this snapshot. A closed issue, a PR number from the shared sequence,
+	// or a vanished issue has no spring and gains no invented link.
+	for i := range snap.Issues {
+		if pr, ok := closingByIssue[snap.Issues[i].Number]; ok {
+			snap.Issues[i].ClosedBy = pr
 		}
 	}
 	return nil

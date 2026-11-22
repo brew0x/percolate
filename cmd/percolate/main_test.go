@@ -287,6 +287,13 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			fmt.Fprint(w, fmt.Sprintf(`[{"sha":"%s","parents":[],"commit":{"author":{"name":"robin","date":"2026-01-01T00:00:00Z"}}},`+
 				`{"sha":"%s","parents":[{"sha":"%s"}],"commit":{"author":{"name":"robin","date":"2026-01-02T00:00:00Z"}}}]`,
 				sha(2), sha(3), sha(2)))
+		case "/repos/acme/widgets/issues":
+			// The issues endpoint also returns PRs; only open non-PR items
+			// may become springs. Issue 5 has a real closing reference below.
+			fmt.Fprint(w, `[{"number":5,"title":"feed","state":"open"},`+
+				`{"number":6,"title":"quiet","state":"open"},`+
+				`{"number":7,"title":"a pull request","state":"open",`+
+				`"pull_request":{"url":"https://api.github.com/repos/acme/widgets/pulls/7"}}]`)
 		case "/repos/acme/widgets/pulls":
 			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)
 		case "/repos/acme/widgets/actions/runs":
@@ -324,11 +331,16 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
 				oidField = fmt.Sprintf(`"oid":"%s",`, sha(4))
 			}
+			closingField := ""
+			if strings.Contains(query, "closingIssuesReferences(first:100)") {
+				closingField = `"closingIssuesReferences":{"nodes":[{"number":5}],"pageInfo":{"hasNextPage":false,"endCursor":""}},`
+			}
 			fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
 				`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}},`+
+				`%s`+
 				`"headRef":{"target":{%s"committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
 				`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}}}`,
-				sha(4), strings.Join(reviews, ","), more, oidField, strings.Join(parents, ","), more)
+				sha(4), strings.Join(reviews, ","), more, closingField, oidField, strings.Join(parents, ","), more)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -387,10 +399,16 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
 		t.Fatalf("unexpected objects: %+v", snap)
 	}
-	// 227 is the documented worst-case plan for default options. This short
+	// The open issues travel through the same record→replay path: the PR-shaped
+	// list item is excluded and only issue 5 has a recorded closing reference.
+	if len(snap.Issues) != 2 || snap.Issues[0].Number != 5 || snap.Issues[0].ClosedBy != 1 ||
+		snap.Issues[1].Number != 6 || snap.Issues[1].ClosedBy != 0 {
+		t.Fatalf("issues or closing references lost in recording: %+v", snap.Issues)
+	}
+	// 238 is the documented worst-case plan for default options. This short
 	// read costs one page per list plus two detail pages for the one batch.
-	if calls > 227 || calls >= 250 {
-		t.Fatalf("record→replay used %d requests, over the 227-request plan and 250-request budget", calls)
+	if calls > 238 || calls >= 250 {
+		t.Fatalf("record→replay used %d requests, over the 238-request plan and 250-request budget", calls)
 	}
 }
 
@@ -480,6 +498,73 @@ func TestAllRecordedFixturesProvenance(t *testing.T) {
 				t.Fatalf("%s changed: documented %s, file hashes to %s", name, documented[1], actual)
 			}
 		})
+	}
+}
+
+// The public issue recording must keep both spring kinds and the feed that
+// joins one of them to a real open pull request. The golden alone is only
+// eyeballed; this pins the reviewed frame's decisive marks in CI so a later
+// recording or rendering change cannot quietly drop either one.
+func TestRecordedIssuesShowsFeedingAndUnlinkedSprings(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/recorded-issues.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	closedBy := map[int]int{}
+	for _, issue := range snap.Issues {
+		closedBy[issue.Number] = issue.ClosedBy
+	}
+	if closedBy[863] != 901 || closedBy[886] != 0 || closedBy[884] != 0 {
+		t.Fatalf("recording lost its real closing references: %+v", closedBy)
+	}
+	var hasPR bool
+	for _, pr := range snap.PullRequests {
+		if pr.Number == 901 && pr.State == "open" {
+			hasPR = true
+		}
+	}
+	if !hasPR {
+		t.Fatal("recording lost the pull request named by the closing reference")
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"render", "--fixture", "../../testdata/fixtures/recorded-issues.json",
+		"--frame", "0", "--size", "100x30", "--color=false"}, &out, &errOut); code != 0 {
+		t.Fatalf("replay exit %d: %s", code, errOut.String())
+	}
+	lines := strings.Split(out.String(), "\n")
+	feedCol, feedingRow := -1, -1
+	for y, line := range lines {
+		if i := strings.Index(line, "∿#863"); i >= 0 {
+			feedCol, feedingRow = i, y
+			break
+		}
+	}
+	if feedCol < 0 {
+		t.Fatalf("reviewed frame has no feeding ∿#863 spring:\n%s", out.String())
+	}
+	feeds, margin := 0, 0
+	for y, line := range lines {
+		runes := []rune(line)
+		if y > feedingRow && feedCol < len(runes) && runes[feedCol] == '⋮' {
+			feeds++
+		}
+		if len(runes) > 0 && runes[0] == '∿' {
+			margin++
+		}
+	}
+	if feeds < 3 {
+		t.Fatalf("feeding spring has no ⋮ feed down the head lane (%d feed cells):\n%s", feeds, out.String())
+	}
+	if margin < 2 {
+		t.Fatalf("frame lost the unlinked margin springs (%d found):\n%s", margin, out.String())
+	}
+	if !strings.Contains(out.String(), "◇") {
+		t.Fatalf("frame lost the pull request diamond the feed runs into:\n%s", out.String())
 	}
 }
 
@@ -869,7 +954,8 @@ func TestWatchLiveGraphQLErrorIsSafeOnStderr(t *testing.T) {
 		case "/repos/acme/widgets/actions/runs":
 			fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
 		case "/repos/acme/widgets/commits",
-			"/repos/acme/widgets/releases", "/repos/acme/widgets/deployments":
+			"/repos/acme/widgets/issues", "/repos/acme/widgets/releases",
+			"/repos/acme/widgets/deployments":
 			fmt.Fprint(w, `[]`)
 		case "/repos/acme/widgets/pulls":
 			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)

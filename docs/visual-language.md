@@ -50,8 +50,10 @@ is forming or leaving a refresh draws dim with its branch, whatever its state.
 
 An issue feeds a pull request only when the snapshot records a closing
 reference naming a pull request that is present; the scene never guesses a link
-from issue text, numbering, or branch names. A dangling reference stays quiet
-like an unlinked issue. Unlinked springs stack down the far-left margin from
+from issue text, numbering, or branch names. On a live read, open issues come
+from GitHub's issues endpoint with its pull-request items filtered out, and
+`closed_by` comes only from that pull request's `closingIssuesReferences`
+connection. A dangling reference stays quiet like an unlinked issue. Unlinked springs stack down the far-left margin from
 the top; selecting one keeps its spring visible. No issue spring moves with the
 animation frame. Several issues may close one pull request and share its head
 lane: the spring shows the number drawn last (a selected issue draws after the
