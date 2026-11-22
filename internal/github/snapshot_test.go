@@ -100,7 +100,11 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 				// fake must do the same, or a typo in pullDetailQuery is
 				// repaired by the response and passes CI until the first
 				// live read of a repository with an open PR.
-				aliases = append(aliases, fmt.Sprintf(`"p%s":%s`, m[1], fakePullDetail(payload.Query, n)))
+				// number is only returned when the alias selected it. A real
+				// GraphQL response has no fields the query forgot to ask for,
+				// and fetchPullDetails compares number with the REST PR.
+				withNumber := strings.Contains(payload.Query, m[0]+"{number")
+				aliases = append(aliases, fmt.Sprintf(`"p%s":%s`, m[1], fakePullDetail(payload.Query, n, withNumber)))
 			}
 			_, _ = fmt.Fprintf(w, `{"data":{"repository":{%s}}}`, strings.Join(aliases, ","))
 		default:
@@ -113,8 +117,11 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 // actually selected. GitHub answers the same way: an unselected field is
 // absent, never guessed. That is what lets the existing end-to-end assertions
 // catch a wrong selection instead of silently reading a fake-filled value.
-func fakePullDetail(query string, number int) string {
-	fields := []string{fmt.Sprintf(`"number":%d`, number)}
+func fakePullDetail(query string, number int, withNumber bool) string {
+	var fields []string
+	if withNumber {
+		fields = append(fields, fmt.Sprintf(`"number":%d`, number))
+	}
 	if strings.Contains(query, "headRefOid") {
 		fields = append(fields, fmt.Sprintf(`"headRefOid":"%s"`, sha(1000+number)))
 	}
@@ -434,17 +441,22 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 		}
 		// A real GraphQL response carries only fields the query requests.
 		// The follow-up handler verifies the head oid before extending its
-		// parents, so the fake must omit oid when the query forgets to ask
+		// parents, and the first page matches number against the REST PR,
+		// so the fake must omit either field when the query forgets to ask
 		// for it, or a regression there would pass unnoticed.
 		oidField := ""
 		if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
 			oidField = fmt.Sprintf(`"oid":"%s",`, sha(1001))
 		}
-		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,`+
+		numberField := ""
+		if strings.Contains(query, `p0:pullRequest(number:1){number`) {
+			numberField = `"number":1,`
+		}
+		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":{%s`+
 			`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}},`+
 			`"headRef":{"target":{%s"committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},`+
 			`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}}}}}}}}`,
-			strings.Join(reviews, ","), more, cursor, oidField, strings.Join(parents, ","), more, cursor)
+			numberField, strings.Join(reviews, ","), more, cursor, oidField, strings.Join(parents, ","), more, cursor)
 	}
 }
 
@@ -459,6 +471,7 @@ func TestPullDetailQuerySelections(t *testing.T) {
 	for _, want := range []string{
 		`query($owner:String!,$name:String!){repository(owner:$owner,name:$name){`,
 		`p0:pullRequest(number:7){`,
+		`p0:pullRequest(number:7){number `,
 		`reviews(first:100){nodes{author{login} state} pageInfo{hasNextPage endCursor}}`,
 		`headRef{target{oid ... on Commit{oid committedDate author{name}`,
 		`parents(first:100){nodes{oid} pageInfo{hasNextPage endCursor}}`,
@@ -488,50 +501,67 @@ func TestPullDetailQuerySelections(t *testing.T) {
 	}
 }
 
-// A typo in a selection must be visible without a token. With the field-aware
-// fake, dropping "state" from the query leaves the decoded review without a
-// state instead of being repaired by the response. This is the offline proof
-// that CI would catch a wrong field; it is not a live GraphQL capture.
+// A wrong selection must be visible without a token. With the field-aware
+// fake, dropping "state" leaves the decoded review without a state, and
+// dropping the first-page "number" fails the REST/GraphQL PR match, instead of
+// either being repaired by a response that returns unselected fields. These are
+// offline proofs that CI catches a wrong field; they are not a live capture.
 func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
-	server, _ := fakeRepo(t, 1)
-	defer server.Close()
-	wrapped := server.Config.Handler
-	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/graphql" {
-			wrapped.ServeHTTP(w, r)
-			return
-		}
-		var payload struct {
-			Query     string         `json:"query"`
-			Variables map[string]any `json:"variables"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode GraphQL request: %v", err)
-			return
-		}
-		mutated := strings.Replace(payload.Query, ` state}`, ` stat}`, 1)
-		if mutated == payload.Query {
-			t.Error("query no longer contains the review state selection")
-		}
-		payload.Query = mutated
-		body, err := json.Marshal(payload)
-		if err != nil {
-			t.Errorf("encode GraphQL request: %v", err)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
-		wrapped.ServeHTTP(w, r)
-	})
-	c, _ := NewClient("test-token")
-	c.baseURL = server.URL
-	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reviews := snap.PullRequests[0].Reviews
-	if len(reviews) == 0 || reviews[0].Author != "sage" || reviews[0].State != "" {
-		t.Fatalf("field typo was hidden by the fake: %+v", reviews)
+	for _, tc := range []struct {
+		name, from, to, wantErr string
+	}{
+		{name: "review state", from: ` state}`, to: ` stat}`},
+		{name: "pull request number", from: `p0:pullRequest(number:1){number `, to: `p0:pullRequest(number:1){`,
+			wantErr: "mismatched pull requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := fakeRepo(t, 1)
+			defer server.Close()
+			wrapped := server.Config.Handler
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/graphql" {
+					wrapped.ServeHTTP(w, r)
+					return
+				}
+				var payload struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode GraphQL request: %v", err)
+					return
+				}
+				mutated := strings.Replace(payload.Query, tc.from, tc.to, 1)
+				if mutated == payload.Query {
+					t.Errorf("query no longer contains %q", tc.from)
+				}
+				payload.Query = mutated
+				body, err := json.Marshal(payload)
+				if err != nil {
+					t.Errorf("encode GraphQL request: %v", err)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(body))
+				r.ContentLength = int64(len(body))
+				wrapped.ServeHTTP(w, r)
+			})
+			c, _ := NewClient("test-token")
+			c.baseURL = server.URL
+			snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("dropped %q was hidden: err=%v", tc.from, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			reviews := snap.PullRequests[0].Reviews
+			if len(reviews) == 0 || reviews[0].Author != "sage" || reviews[0].State != "" {
+				t.Fatalf("field typo was hidden by the fake: %+v", reviews)
+			}
+		})
 	}
 }
 
