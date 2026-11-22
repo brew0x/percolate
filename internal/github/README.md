@@ -119,5 +119,8 @@ a review on one PR and a commit on another cannot stand in for the proof. That
 guard is also checked offline against the real REST-derived open-PR recording's
 shape (`TestCaptureGraphQLProofAcceptsRecordedOpenPR`), so a token-enabled run
 cannot be refused for a structural reason; it still does not claim any GraphQL
-response was decoded. The probe produces the missing live proof for #21; it does
-not claim that proof has been captured or checked in.
+response was decoded. The probe also writes a 0600 companion file
+`<capture-out>.graphql.jsonl` containing only the successful GraphQL response
+bodies, so a reviewer can inspect the exact fields GitHub returned; no request
+headers or token are stored in it. The probe produces the missing live proof
+for #21; it does not claim that proof has been captured or checked in.

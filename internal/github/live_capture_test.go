@@ -17,7 +17,10 @@
 // stay here. The token is never printed or persisted. A pass shows the real
 // GraphQL selections for reviews and head-commit anchors decoded into the same
 // open pull request, and fails unless that pairing exists, because
-// fetchPullDetails skips null aliases rather than erroring. The proof is
+// fetchPullDetails skips null aliases rather than erroring. It also writes a
+// 0600 companion file named <capture-out>.graphql.jsonl with the raw successful
+// GraphQL response bodies, so a reviewer can check the field names the snapshot
+// was built from; no request headers or token are stored in it. The proof is
 // complete only once someone with a token runs this and the resulting recording,
 // provenance and goldens are reviewed and checked in. This probe does not by
 // itself close #21.
@@ -55,6 +58,7 @@ func TestLiveGraphQLCapture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	graphQL := installGraphQLResponseTee(client)
 
 	// The shared helper checks that the token can read a public repository
 	// before any snapshot is built, then requires one live GraphQL review and
@@ -67,4 +71,14 @@ func TestLiveGraphQLCapture(t *testing.T) {
 	t.Logf("recorded %s: %d open PRs, %d PRs with both fields, %d reviews, %d head-commit anchors", *captureRepo, prs, proofs, reviews, anchors)
 	t.Logf("recording: %s", *captureOut)
 	t.Logf("SHA-256: %x", sha256.Sum256(data))
+	raw := graphQL.Bytes()
+	if len(raw) == 0 {
+		t.Fatal("snapshot passed the proof without any captured GraphQL response")
+	}
+	responsePath := *captureOut + ".graphql.jsonl"
+	if err := writeCapture(responsePath, raw); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("GraphQL responses: %s", responsePath)
+	t.Logf("GraphQL SHA-256: %x", sha256.Sum256(raw))
 }
