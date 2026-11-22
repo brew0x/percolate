@@ -137,10 +137,12 @@ The offline half of that gap is now tighter. `internal/github`'s GraphQL fake
 returns only the fields a query selected, `TestPullDetailQuerySelections`
 pins the aliases, arguments and selections `fetchPullDetails` reads, and
 `TestPullDetailFieldTypoIsVisibleLocally` shows a dropped `state` selection
-reaching the snapshot as an empty review state. A wrong field or alias now
-fails `make check` locally instead of passing until the first live read.
-That is a check on the query, not a live GraphQL capture, so it does not
-replace the steps below.
+reaching the snapshot as an empty review state. `TestCaptureGraphQLProofAcceptsRecordedOpenPR`
+also runs the live probe's proof predicate against this recording's real
+reviewed-open-PR shape, so a token-enabled run cannot be refused for a
+structural reason. A wrong field or alias now fails `make check` locally
+instead of passing until the first live read. These are checks on the query and
+the guard, not a live GraphQL capture, so they do not replace the steps below.
 
 Someone with a GitHub token can produce the missing proof. The opt-in probe in
 `internal/github/live_capture_test.go` is excluded from `make check` so the
