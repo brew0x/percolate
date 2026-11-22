@@ -502,19 +502,22 @@ func TestPullDetailQuerySelections(t *testing.T) {
 }
 
 // A wrong selection must be visible without a token. With the field-aware
-// fake, dropping "state" leaves the decoded review without a state, dropping
-// the first-page "number" fails the REST/GraphQL PR match, and dropping a head
-// anchor selection leaves that anchor absent or incomplete. None is repaired
-// by a response that returns unselected fields. These are offline proofs that
-// CI catches a wrong field; they are not a live capture.
+// fake, dropping the review "author" or "state" leaves the decoded review
+// without that field, dropping the first-page "number" fails the REST/GraphQL
+// PR match, and dropping a head anchor selection leaves that anchor absent or
+// incomplete. None is repaired by a response that returns unselected fields.
+// These are offline proofs that CI catches a wrong field; they are not a live
+// capture.
 func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 	for _, tc := range []struct {
 		name, from, to, wantErr string
+		wantEmptyReviewAuthor   bool
 		wantEmptyReviewState    bool
 		wantNoAnchor            bool
 		wantEmptyAuthor         bool
 		wantNoParents           bool
 	}{
+		{name: "review author", from: `author{login}`, to: `author{logn}`, wantEmptyReviewAuthor: true},
 		{name: "review state", from: ` state}`, to: ` stat}`, wantEmptyReviewState: true},
 		{name: "pull request number", from: `p0:pullRequest(number:1){number `, to: `p0:pullRequest(number:1){`,
 			wantErr: "mismatched pull requests"},
@@ -569,7 +572,14 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 				t.Fatal(err)
 			}
 			reviews := snap.PullRequests[0].Reviews
-			if len(reviews) == 0 || reviews[0].Author != "sage" {
+			if len(reviews) == 0 {
+				t.Fatalf("field typo lost the reviews: %+v", reviews)
+			}
+			if tc.wantEmptyReviewAuthor {
+				if reviews[0].Author != "" {
+					t.Fatalf("dropped %q was hidden by the fake: %+v", tc.from, reviews)
+				}
+			} else if reviews[0].Author != "sage" {
 				t.Fatalf("field typo was hidden by the fake: %+v", reviews)
 			}
 			if tc.wantEmptyReviewState && reviews[0].State != "" {
