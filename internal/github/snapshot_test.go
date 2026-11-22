@@ -502,17 +502,28 @@ func TestPullDetailQuerySelections(t *testing.T) {
 }
 
 // A wrong selection must be visible without a token. With the field-aware
-// fake, dropping "state" leaves the decoded review without a state, and
-// dropping the first-page "number" fails the REST/GraphQL PR match, instead of
-// either being repaired by a response that returns unselected fields. These are
-// offline proofs that CI catches a wrong field; they are not a live capture.
+// fake, dropping "state" leaves the decoded review without a state, dropping
+// the first-page "number" fails the REST/GraphQL PR match, and dropping a head
+// anchor selection leaves that anchor absent or incomplete. None is repaired
+// by a response that returns unselected fields. These are offline proofs that
+// CI catches a wrong field; they are not a live capture.
 func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 	for _, tc := range []struct {
 		name, from, to, wantErr string
+		wantEmptyReviewState    bool
+		wantNoAnchor            bool
+		wantEmptyAuthor         bool
+		wantNoParents           bool
 	}{
-		{name: "review state", from: ` state}`, to: ` stat}`},
+		{name: "review state", from: ` state}`, to: ` stat}`, wantEmptyReviewState: true},
 		{name: "pull request number", from: `p0:pullRequest(number:1){number `, to: `p0:pullRequest(number:1){`,
 			wantErr: "mismatched pull requests"},
+		{name: "head commit date", from: ` committedDate`, to: ` commitDate`,
+			wantNoAnchor: true},
+		{name: "head commit author", from: `author{name}`, to: `author{login}`,
+			wantEmptyAuthor: true},
+		{name: "head commit parents", from: `parents(first:100)`, to: `parentz(first:100)`,
+			wantNoParents: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := fakeRepo(t, 1)
@@ -558,8 +569,34 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 				t.Fatal(err)
 			}
 			reviews := snap.PullRequests[0].Reviews
-			if len(reviews) == 0 || reviews[0].Author != "sage" || reviews[0].State != "" {
+			if len(reviews) == 0 || reviews[0].Author != "sage" {
 				t.Fatalf("field typo was hidden by the fake: %+v", reviews)
+			}
+			if tc.wantEmptyReviewState && reviews[0].State != "" {
+				t.Fatalf("dropped %q was hidden by the fake: %+v", tc.from, reviews)
+			}
+			if !tc.wantEmptyReviewState && reviews[0].State != "approved" {
+				t.Fatalf("unexpected review state in %s: %+v", tc.name, reviews)
+			}
+			var head *repo.Commit
+			for i := range snap.Commits {
+				if snap.Commits[i].Branch == "flow-1" {
+					head = &snap.Commits[i]
+				}
+			}
+			switch {
+			case tc.wantNoAnchor:
+				if head != nil {
+					t.Fatalf("dropped %q was hidden by the fake: %+v", tc.from, *head)
+				}
+			case tc.wantEmptyAuthor:
+				if head == nil || head.Author != "" {
+					t.Fatalf("dropped %q was hidden by the fake: %+v", tc.from, head)
+				}
+			case tc.wantNoParents:
+				if head == nil || len(head.Parents) != 0 {
+					t.Fatalf("dropped %q was hidden by the fake: %+v", tc.from, head)
+				}
 			}
 		})
 	}
