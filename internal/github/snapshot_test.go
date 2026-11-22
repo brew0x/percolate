@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -95,17 +96,92 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 			pattern := regexp.MustCompile(`p(\d+):pullRequest\(number:(\d+)\)`)
 			for _, m := range pattern.FindAllStringSubmatch(payload.Query, -1) {
 				n, _ := strconv.Atoi(m[2])
-				aliases = append(aliases, fmt.Sprintf(
-					`"p%s":{"number":%d,"headRefOid":"%s","headRefName":"flow-%d","baseRefName":"main",`+
-						`"headRef":{"target":{"oid":"%s","committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},"parents":{"nodes":[{"oid":"%s"}]}}},`+
-						`"reviews":{"nodes":[{"author":{"login":"sage"},"state":"APPROVED"},{"author":null,"state":"COMMENTED"}]}}`,
-					m[1], n, sha(1000+n), n, sha(1000+n), sha(n)))
+				// A real GraphQL response carries only selected fields. The
+				// fake must do the same, or a typo in pullDetailQuery is
+				// repaired by the response and passes CI until the first
+				// live read of a repository with an open PR.
+				aliases = append(aliases, fmt.Sprintf(`"p%s":%s`, m[1], fakePullDetail(payload.Query, n)))
 			}
 			_, _ = fmt.Fprintf(w, `{"data":{"repository":{%s}}}`, strings.Join(aliases, ","))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 	}
+}
+
+// fakePullDetail builds one GraphQL PR payload from the fields the query
+// actually selected. GitHub answers the same way: an unselected field is
+// absent, never guessed. That is what lets the existing end-to-end assertions
+// catch a wrong selection instead of silently reading a fake-filled value.
+func fakePullDetail(query string, number int) string {
+	fields := []string{fmt.Sprintf(`"number":%d`, number)}
+	if strings.Contains(query, "headRefOid") {
+		fields = append(fields, fmt.Sprintf(`"headRefOid":"%s"`, sha(1000+number)))
+	}
+	if strings.Contains(query, "headRefName") {
+		fields = append(fields, fmt.Sprintf(`"headRefName":"flow-%d"`, number))
+	}
+	if strings.Contains(query, "baseRefName") {
+		fields = append(fields, `"baseRefName":"main"`)
+	}
+	if strings.Contains(query, "reviews(first:") {
+		fields = append(fields, fakeReviews(query))
+	}
+	if strings.Contains(query, "headRef{target{") {
+		fields = append(fields, fakeHeadRef(query, number))
+	}
+	return "{" + strings.Join(fields, ",") + "}"
+}
+
+// fakeReviews answers the review selection, including the deleted reviewer
+// whose author is null. Both node fields are omitted unless selected.
+func fakeReviews(query string) string {
+	withAuthor := strings.Contains(query, "author{login}")
+	withState := strings.Contains(query, "state}")
+	node := func(login, state string) string {
+		var parts []string
+		if withAuthor {
+			if login == "" {
+				parts = append(parts, `"author":null`)
+			} else {
+				parts = append(parts, fmt.Sprintf(`"author":{"login":%q}`, login))
+			}
+		}
+		if withState {
+			parts = append(parts, fmt.Sprintf(`"state":%q`, state))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	}
+	fields := []string{fmt.Sprintf(`"nodes":[%s]`, strings.Join([]string{
+		node("sage", "APPROVED"), node("", "COMMENTED"),
+	}, ","))}
+	if strings.Contains(query, "pageInfo{hasNextPage endCursor}") {
+		fields = append(fields, `"pageInfo":{"hasNextPage":false,"endCursor":""}`)
+	}
+	return `"reviews":{` + strings.Join(fields, ",") + `}`
+}
+
+// fakeHeadRef answers the head-commit selection. The oid is returned wherever
+// asked, including the follow-up where the join verifies commit identity.
+func fakeHeadRef(query string, number int) string {
+	target := []string{}
+	if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
+		target = append(target, fmt.Sprintf(`"oid":"%s"`, sha(1000+number)))
+	}
+	if strings.Contains(query, "committedDate") {
+		target = append(target, `"committedDate":"2026-01-03T00:00:00Z"`)
+	}
+	if strings.Contains(query, "author{name}") {
+		target = append(target, `"author":{"name":"robin"}`)
+	}
+	if strings.Contains(query, "parents(first:") {
+		parents := []string{fmt.Sprintf(`"nodes":[{"oid":"%s"}]`, sha(number))}
+		if strings.Contains(query, "pageInfo{hasNextPage endCursor}") {
+			parents = append(parents, `"pageInfo":{"hasNextPage":false,"endCursor":""}`)
+		}
+		target = append(target, `"parents":{`+strings.Join(parents, ",")+`}`)
+	}
+	return `"headRef":{"target":{` + strings.Join(target, ",") + `}}`
 }
 
 // pageString builds one page of pageSize JSON items for item indexes that
@@ -149,7 +225,8 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	for _, cm := range snap.Commits {
 		if cm.Branch == "flow-7" {
 			tips++
-			if cm.SHA == sha(1007) && len(cm.Parents) == 1 && cm.Parents[0] == sha(7) {
+			if cm.SHA == sha(1007) && len(cm.Parents) == 1 && cm.Parents[0] == sha(7) &&
+				cm.Author == "robin" && !cm.Time.IsZero() {
 				linked++
 			}
 		}
@@ -371,21 +448,90 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 	}
 }
 
-// A follow-up page asks only for the connections that reported another page,
-// but it still needs the head commit's oid: the join verifies that the second
-// page describes the same commit as the first. This states the query contract
-// that the field-aware fakes below enforce by returning only requested fields.
-func TestPullDetailQueryFollowUpAsksForHeadOID(t *testing.T) {
+// These selections are the contract between pullDetailQuery and
+// fetchPullDetails. The field-aware fakes can only catch a wrong field if the
+// query asks for it, so pin the text too: a typo, a dropped argument or a
+// changed alias fails here instead of on the first live GraphQL read of a
+// repository with an open PR.
+func TestPullDetailQuerySelections(t *testing.T) {
 	prs := []repo.PullRequest{{Number: 7, Head: "flow"}}
+	first := pullDetailQuery(prs, nil)
+	for _, want := range []string{
+		`query($owner:String!,$name:String!){repository(owner:$owner,name:$name){`,
+		`p0:pullRequest(number:7){`,
+		`reviews(first:100){nodes{author{login} state} pageInfo{hasNextPage endCursor}}`,
+		`headRef{target{oid ... on Commit{oid committedDate author{name}`,
+		`parents(first:100){nodes{oid} pageInfo{hasNextPage endCursor}}`,
+	} {
+		if !strings.Contains(first, want) {
+			t.Errorf("first-page query lost %q:\n%s", want, first)
+		}
+	}
+	if strings.Contains(first, "last:") {
+		t.Errorf("reviews and parents must read oldest-first with first:\n%s", first)
+	}
+
+	// A follow-up asks only for connections that reported another page, but
+	// still needs the head oid so the join can verify commit identity.
 	follow := pullDetailQuery(prs, []detailCursor{{
 		review: "reviews-cursor", needReview: true,
 		parent: "parents-cursor", needParent: true,
 	}})
-	if !strings.Contains(follow, "target{oid") || !strings.Contains(follow, "Commit{oid") {
-		t.Fatalf("follow-up omitted the head oid: %s", follow)
+	for _, want := range []string{
+		`p0:pullRequest(number:7){number `,
+		`reviews(first:100,after:"reviews-cursor"){nodes{author{login} state} pageInfo{hasNextPage endCursor}}`,
+		`headRef{target{oid ... on Commit{oid parents(first:100,after:"parents-cursor"){nodes{oid} pageInfo{hasNextPage endCursor}}}}}`,
+	} {
+		if !strings.Contains(follow, want) {
+			t.Errorf("follow-up query lost %q:\n%s", want, follow)
+		}
 	}
-	if !strings.Contains(follow, `after:"parents-cursor"`) {
-		t.Fatalf("follow-up omitted the parent cursor: %s", follow)
+}
+
+// A typo in a selection must be visible without a token. With the field-aware
+// fake, dropping "state" from the query leaves the decoded review without a
+// state instead of being repaired by the response. This is the offline proof
+// that CI would catch a wrong field; it is not a live GraphQL capture.
+func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
+	server, _ := fakeRepo(t, 1)
+	defer server.Close()
+	wrapped := server.Config.Handler
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			wrapped.ServeHTTP(w, r)
+			return
+		}
+		var payload struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode GraphQL request: %v", err)
+			return
+		}
+		mutated := strings.Replace(payload.Query, ` state}`, ` stat}`, 1)
+		if mutated == payload.Query {
+			t.Error("query no longer contains the review state selection")
+		}
+		payload.Query = mutated
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Errorf("encode GraphQL request: %v", err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		wrapped.ServeHTTP(w, r)
+	})
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := snap.PullRequests[0].Reviews
+	if len(reviews) == 0 || reviews[0].Author != "sage" || reviews[0].State != "" {
+		t.Fatalf("field typo was hidden by the fake: %+v", reviews)
 	}
 }
 

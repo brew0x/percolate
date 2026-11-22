@@ -96,7 +96,12 @@ real public repository read through unauthenticated GitHub REST, with its
 source and method in `testdata/fixtures/README.md` and replay frames checked
 in `testdata/golden/recorded-hivemq-*`. It closes #3's recording and replay
 acceptance. GitHub's GraphQL details still rest on local fakes: that API needs
-a token, which this recording deliberately did not use.
+a token, which this recording deliberately did not use. The fakes now answer
+with only the fields each query selected, `TestPullDetailQuerySelections`
+pins the aliases, arguments and selections the client depends on, and
+`TestPullDetailFieldTypoIsVisibleLocally` shows a mistyped field arriving as
+missing snapshot data. A wrong field or alias therefore fails `make check`
+here; that is not the same as a live GraphQL response having been decoded.
 
 Tests use local httptest servers and injected credential-helper output. They
 require no GitHub access, real credentials, or changes to rendering. The
