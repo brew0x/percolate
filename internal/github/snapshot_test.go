@@ -49,8 +49,15 @@ func deploymentItem(i int) string {
 func fakeRepo(t *testing.T, prs int) (*httptest.Server, *int) {
 	t.Helper()
 	calls := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+	server := httptest.NewServer(fakeRepoHandler(t, prs, &calls))
+	return server, &calls
+}
+
+// fakeRepoHandler is fakeRepo's transport without the server, so capture tests
+// can wrap it with different repository metadata and count selected reads.
+func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		*calls = *calls + 1
 		w.Header().Set("Content-Type", "application/json")
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		switch {
@@ -98,8 +105,7 @@ func fakeRepo(t *testing.T, prs int) (*httptest.Server, *int) {
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-	}))
-	return server, &calls
+	}
 }
 
 // pageString builds one page of pageSize JSON items for item indexes that

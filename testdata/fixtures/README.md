@@ -142,8 +142,12 @@ GITHUB_TOKEN=... go test -tags graphqlcapture ./internal/github \
 
 It fails unless a live GraphQL response filled a named review author/state and
 a head commit with an author, date and parent on a PR-only lane, then prints the
-scratch file's SHA-256. It writes only public snapshot data; the token is never
-printed or saved. The equivalent CLI read is
+scratch file's SHA-256. The visibility guard, that proof predicate and the 0600
+temp-file/rename write are shared with the offline suite in
+`internal/github/capture_guard_test.go`, so `make check` verifies the guard runs
+before any snapshot is built and that a recording is never world-readable, even
+though the live probe itself needs a token. It writes only public snapshot data;
+the token is never printed or saved. The equivalent CLI read is
 `percolate OWNER/REPO --record /tmp/open-pr-graphql.json` with `GITHUB_TOKEN`
 exported (never commit the token, an `Authorization` header, or private data).
 A passing run is the live proof, but #21 is only closed once that recording is
