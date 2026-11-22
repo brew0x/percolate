@@ -9,12 +9,16 @@
 //	  -run TestLiveGraphQLCapture -v \
 //	  -args -capture-out=/tmp/open-pr-graphql.json -capture-repo=rocq-prover/rfcs
 //
-// It writes only public snapshot data to -capture-out and prints that file's
-// SHA-256 for the README; the token is never printed or persisted. A pass shows
-// the real GraphQL selections for reviews and head-commit anchors decoded into
-// a snapshot. The proof is complete only once someone with a token runs this,
-// and the resulting recording, provenance and goldens are reviewed and checked
-// in. This probe does not by itself close #21.
+// The repository's visibility is checked before any snapshot is built: private
+// and internal repositories are refused, and the recording is written with mode
+// 0600 through a temp file and rename. Private snapshot data can therefore
+// never land in a world-readable file before provenance review. The token is
+// never printed or persisted. A pass shows the real GraphQL selections for
+// reviews and head-commit anchors decoded into a snapshot, and fails if either
+// field is absent, because fetchPullDetails skips null aliases rather than
+// erroring. The proof is complete only once someone with a token runs this and
+// the resulting recording, provenance and goldens are reviewed and checked in.
+// This probe does not by itself close #21.
 package github
 
 import (
@@ -24,6 +28,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,42 +60,33 @@ func TestLiveGraphQLCapture(t *testing.T) {
 
 	meta := struct {
 		DefaultBranch string `json:"default_branch"`
+		Private       bool   `json:"private"`
+		Visibility    string `json:"visibility"`
 	}{}
 	body, err := client.ListPage(ctx, fmt.Sprintf("/repos/%s/%s", parts[0], parts[1]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(body, &meta); err != nil || meta.DefaultBranch == "" {
-		t.Fatal("GitHub repository metadata had no default branch")
+	if err := json.Unmarshal(body, &meta); err != nil {
+		t.Fatal(err)
+	}
+	// The token can read private repositories; never build or write a snapshot
+	// from one. Guarded by TestCaptureRepoPublic in the offline suite.
+	if err := captureRepoPublic(meta.DefaultBranch, meta.Private, meta.Visibility); err != nil {
+		t.Fatalf("refusing to record %s: %v", *captureRepo, err)
 	}
 	snap, err := client.BuildSnapshot(ctx, DefaultSnapshotOptions(parts[0], parts[1]))
 	if err != nil {
 		t.Fatalf("live read failed: %v (a failed GraphQL detail query rejects the whole snapshot)", err)
 	}
 
-	prLanes := map[string]bool{}
-	reviews := 0
-	for _, p := range snap.PullRequests {
-		prLanes[p.Head] = true
-		for _, r := range p.Reviews {
-			if r.Author != "" && r.State != "" {
-				reviews++
-			}
-		}
-	}
+	// fetchPullDetails skips null PR aliases and head targets with no commit
+	// anchor instead of failing the read, so a clean record is not proof. These
+	// counts are also checked against local snapshots by TestCaptureGraphQLProof.
+	reviews, anchors := captureGraphQLProof(&snap, meta.DefaultBranch)
 	if len(snap.PullRequests) == 0 || reviews == 0 {
 		t.Fatalf("no open PR with a GraphQL-filled review in %s (%d PRs, %d reviews); choose another public repository",
 			*captureRepo, len(snap.PullRequests), reviews)
-	}
-	// The REST commit list only carries the default branch. An anchor on a
-	// different PR head lane, with an author, date and parent, can only have
-	// come from the live headRef/target Commit selection in fetchPullDetails.
-	anchors := 0
-	for _, cm := range snap.Commits {
-		if prLanes[cm.Branch] && cm.Branch != meta.DefaultBranch && cm.SHA != "" &&
-			cm.Author != "" && !cm.Time.IsZero() && len(cm.Parents) > 0 {
-			anchors++
-		}
 	}
 	if anchors == 0 {
 		t.Fatalf("no GraphQL-filled head-commit anchor in %s; choose another public repository", *captureRepo)
@@ -101,7 +97,24 @@ func TestLiveGraphQLCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(*captureOut, data, 0644); err != nil {
+	// CreateTemp creates the file with 0600 and the rename replaces the
+	// destination inode, so the recording is never world-readable on disk.
+	tmp, err := os.CreateTemp(filepath.Dir(*captureOut), ".percolate-capture-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmpName, *captureOut); err != nil {
+		os.Remove(tmpName)
 		t.Fatal(err)
 	}
 	t.Logf("recorded %s: %d open PRs, %d reviews, %d head-commit anchors", *captureRepo, len(snap.PullRequests), reviews, anchors)

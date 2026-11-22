@@ -149,15 +149,24 @@ exported (never commit the token, an `Authorization` header, or private data).
 A passing run is the live proof, but #21 is only closed once that recording is
 checked in with honest provenance and reviewed goldens, as below.
 
-`BuildSnapshot` calls `fetchPullDetails` whenever the read contains an open PR
-and fails the whole read if the GraphQL call errors or returns a shape it cannot
-decode, so a successful recording is itself proof that the live selections and
-aliases worked. Then:
+A successful recording alone is **not** the proof. `fetchPullDetails` calls
+`BuildSnapshot`'s GraphQL read whenever there is an open PR and fails the read
+on a GraphQL error or an undecodable shape, but it deliberately skips a PR alias
+that is missing or null and a head target that cannot supply a commit anchor
+(`internal/github/snapshot.go`). The CLI can therefore record cleanly with the
+required fields absent. The capture verifies the live selections and aliases
+only when the snapshot actually contains the values they were meant to fill.
+The opt-in probe above enforces that before it writes anything; a CLI recording
+must be checked the same way:
 
-1. Replay the file twice and compare byte for byte, for example
+1. Confirm at least one recorded open PR carries a real review author and state
+   and a head commit on a PR-only lane with a SHA, author, date and parent - the
+   values `fetchPullDetails` reads from the live GraphQL response. If any is
+   missing, the capture does not prove the mapping: choose another public
+   repository with a reviewed open PR and record again. Do not check it in as
+   the #21 proof.
+2. Replay the file twice and compare byte for byte, for example
    `percolate render --fixture /tmp/open-pr-graphql.json --frame 7 --size 100x30 --color=false`.
-2. Confirm the recorded PR carries a real review author/state and a head commit
-   on its PR lane - the fields `fetchPullDetails` filled from GraphQL.
 3. Add the snapshot under `testdata/fixtures/recorded-*.json`, document its
    source, capture date, head SHA, method ("authenticated GraphQL via the
    unmodified binary") and SHA-256 in this README, run `make golden`, and read
