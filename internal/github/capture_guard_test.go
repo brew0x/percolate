@@ -298,6 +298,27 @@ func TestCaptureRepoPublic(t *testing.T) {
 	}
 }
 
+// The live guard must accept a real repository's shape, not just the synthetic
+// snapshot above. The REST-derived open-PR recording has the same named review
+// and fork-lane head anchor that an authenticated GraphQL capture has to fill;
+// checking it here proves the guard will not reject a real capture for a
+// structural reason. It says nothing about where that recording's data came
+// from: the live GraphQL proof is still missing.
+func TestCaptureGraphQLProofAcceptsRecordedOpenPR(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/recorded-open-pr.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	proofs, reviews, anchors := captureGraphQLProof(&snap, "master")
+	if proofs != 1 || reviews == 0 || anchors == 0 {
+		t.Fatalf("real reviewed open PR shape was refused: %d proofs, %d reviews, %d anchors", proofs, reviews, anchors)
+	}
+}
+
 func TestCaptureGraphQLProof(t *testing.T) {
 	head := "jfehrle:debugger_ltac2"
 	other := "other:topic"

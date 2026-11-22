@@ -113,6 +113,9 @@ probe (`live_capture_test.go`) is compiled but not run by `make check`; a
 maintainer with a GitHub token can run it to record a real public GraphQL
 snapshot and print its SHA-256. It refuses to write unless one open pull request
 has both a named review and a head-commit anchor filled from that response, so
-a review on one PR and a commit on another cannot stand in for the proof. It
-produces the missing live proof for #21; it does not claim that proof has been
-captured or checked in.
+a review on one PR and a commit on another cannot stand in for the proof. That
+guard is also checked offline against the real REST-derived open-PR recording's
+shape (`TestCaptureGraphQLProofAcceptsRecordedOpenPR`), so a token-enabled run
+cannot be refused for a structural reason; it still does not claim any GraphQL
+response was decoded. The probe produces the missing live proof for #21; it does
+not claim that proof has been captured or checked in.
