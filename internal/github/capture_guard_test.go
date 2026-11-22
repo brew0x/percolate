@@ -1,15 +1,18 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,6 +95,81 @@ func writeCapture(out string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// graphqlResponseTee copies successful GraphQL response bodies while a live
+// capture runs. The opt-in probe writes those bytes to a 0600 companion file so
+// the next token-enabled recording can be checked against exactly what GitHub
+// returned, not only against the snapshot it was mapped into. Only response
+// bodies are copied: no request headers, bearer token or REST response can
+// enter the file. Non-200 replies are skipped, and an oversized body still fails
+// the client's own check, so neither can be written to the companion file.
+type graphqlResponseTee struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	buf  bytes.Buffer
+}
+
+// installGraphQLResponseTee attaches the tee to a client. It is test-only
+// plumbing shared by the tagged probe and the offline guard tests.
+func installGraphQLResponseTee(c *Client) *graphqlResponseTee {
+	tee := &graphqlResponseTee{base: c.http.Transport}
+	if tee.base == nil {
+		tee.base = http.DefaultTransport
+	}
+	c.http.Transport = tee
+	return tee
+}
+
+func (t *graphqlResponseTee) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || resp.StatusCode != http.StatusOK ||
+		req.Method != http.MethodPost || req.URL.Path != "/graphql" {
+		return resp, err
+	}
+	resp.Body = &teeReadCloser{
+		Reader: io.TeeReader(resp.Body, teeWriter{t}),
+		Closer: resp.Body,
+		tee:    t,
+	}
+	return resp, err
+}
+
+// teeReadCloser appends a newline after each response is consumed, so several
+// paged responses stay separately checkable lines in the companion file.
+type teeReadCloser struct {
+	io.Reader
+	io.Closer
+	tee  *graphqlResponseTee
+	once sync.Once
+}
+
+func (b *teeReadCloser) Close() error {
+	err := b.Closer.Close()
+	b.once.Do(func() { _, _ = teeWriter{b.tee}.Write([]byte("\n")) })
+	return err
+}
+
+type teeWriter struct{ tee *graphqlResponseTee }
+
+func (w teeWriter) Write(p []byte) (int, error) {
+	w.tee.mu.Lock()
+	defer w.tee.mu.Unlock()
+	room := graphqlBodyLimit - w.tee.buf.Len()
+	if room <= 0 {
+		return len(p), nil // the client itself rejects the oversized body
+	}
+	if len(p) > room {
+		p = p[:room]
+	}
+	return w.tee.buf.Write(p)
+}
+
+// Bytes returns a copy of the captured response bodies.
+func (t *graphqlResponseTee) Bytes() []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]byte(nil), t.buf.Bytes()...)
 }
 
 // recordPublicCapture is the body of the opt-in live GraphQL probe. Only token
@@ -210,6 +288,56 @@ func entries(t *testing.T, dir string) []string {
 		names = append(names, f.Name())
 	}
 	return names
+}
+
+// The raw-response companion must contain only successful GraphQL bodies. A
+// review field typo would be visible here before anyone tries to claim it came
+// from a live response, and neither the bearer token nor a REST body can leak
+// into the file through the tee.
+func TestGraphQLResponseTeeCapturesOnlyGraphQLBodies(t *testing.T) {
+	const body = `{"data":{"repository":{"p0":{"number":7,"reviews":{"nodes":[]}}}}}`
+	var fail bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/graphql" {
+			if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-token" {
+				t.Errorf("unexpected GraphQL request: %s %q", r.Method, r.Header.Get("Authorization"))
+			}
+			if fail {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("403 body must not be captured"))
+				return
+			}
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		_, _ = w.Write([]byte(`{"rest":"not captured"}`))
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	tee := installGraphQLResponseTee(c)
+	if _, err := c.ListPage(context.Background(), "/repos/acme/widgets"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.GraphQL(context.Background(), "query{repository{p0:pullRequest(number:7){number}}}", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(tee.Bytes()), body+"\n"; got != want {
+		t.Fatalf("captured %q, want %q", got, want)
+	}
+	fail = true
+	if _, err := c.GraphQL(context.Background(), "query{repository{p0:pullRequest(number:7){number}}}", nil); err == nil {
+		t.Fatal("accepted a failed GraphQL response")
+	}
+	if got := string(tee.Bytes()); got != body+"\n" {
+		t.Fatalf("failed response changed the capture: %q", got)
+	}
+	for _, secret := range []string{"test-token", "Authorization", "not captured", "403 body"} {
+		if strings.Contains(string(tee.Bytes()), secret) {
+			t.Fatalf("capture leaked %q", secret)
+		}
+	}
 }
 
 func TestRecordPublicCaptureGuardsBeforeBuild(t *testing.T) {

@@ -13,6 +13,10 @@ import (
 	"unicode"
 )
 
+// graphqlBodyLimit bounds one GraphQL response. The opt-in capture tee uses the
+// same cap, so a scrape for provenance can never exceed what the client accepts.
+const graphqlBodyLimit = 16 << 20
+
 type graphqlError struct {
 	Message string `json:"message"`
 }
@@ -50,12 +54,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	if resp.StatusCode != http.StatusOK {
 		return nil, responseError(resp, "GraphQL", time.Now())
 	}
-	const limit = 16 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, graphqlBodyLimit+1))
 	if err != nil {
 		return nil, errors.New("cannot read GitHub GraphQL response")
 	}
-	if len(body) > limit {
+	if len(body) > graphqlBodyLimit {
 		return nil, errors.New("GitHub GraphQL response exceeds 16 MiB")
 	}
 	var result graphqlResult

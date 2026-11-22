@@ -160,7 +160,10 @@ GITHUB_TOKEN=... go test -tags graphqlcapture ./internal/github \
 
 It fails unless a live GraphQL response filled a named review author/state and
 a head commit with an author, date and parent on a PR-only lane **of the same
-open pull request**, then prints the scratch file's SHA-256. A review on one PR
+open pull request**, then prints the scratch file's SHA-256. It also writes a
+0600 companion `<capture-out>.graphql.jsonl` holding only the successful
+GraphQL response bodies, with its own SHA-256; read that file before believing
+the field names in the snapshot. No request headers or token are stored in it. A review on one PR
 and an anchor on another is deliberately not proof: each query handles many PR
 aliases, and only a paired result shows that one detail response decoded both
 selections. The visibility guard, that proof predicate and the 0600
@@ -196,7 +199,9 @@ must be checked the same way:
    source, capture date, head SHA, method (authenticated GraphQL through
    `Client.BuildSnapshot`, or through the unmodified binary if the CLI was used)
    and SHA-256 in a top-level section headed with that filename, as the three
-   existing recordings do. Then run `make golden`: both the scene and CLI replay
+   existing recordings do. With the probe, also cite the companion GraphQL
+   response file's SHA-256 in that section and keep the file itself outside the
+   repository; never commit request headers or a token. Then run `make golden`: both the scene and CLI replay
    tests discover every
    `recorded-*.json`, so this writes the new recording's nine scene frames and
    its three `100x30` CLI frames. Read the new frames before committing them.
