@@ -103,4 +103,8 @@ require no GitHub access, real credentials, or changes to rendering. The
 record→replay test records a PR whose GraphQL response needs a second page for
 both reviews and parents, then checks the complete lists in the recording, the
 identical frame bytes and a request count inside the plan; the public
-recording's golden frames stay byte-identical.
+recording's golden frames stay byte-identical. The opt-in `graphqlcapture`
+probe (`live_capture_test.go`) is compiled but not run by `make check`; a
+maintainer with a GitHub token can run it to record a real public GraphQL
+snapshot and print its SHA-256. It produces the missing live proof for #21; it
+does not claim that proof has been captured or checked in.

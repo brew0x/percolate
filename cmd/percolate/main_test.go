@@ -573,6 +573,106 @@ func TestRecordedPullDetailsFixtureProvenance(t *testing.T) {
 	}
 }
 
+// The open-pull-request recording is the replay-path proof for the fields #21
+// needs (not the live GraphQL proof, which requires a token): it must carry one
+// real open PR with a named reviewer state and a head commit anchored on the
+// fork lane, and its CLI frames must match the reviewed goldens byte for byte.
+func TestRecordedOpenPRFixtureReplaysToGolden(t *testing.T) {
+	const fixturePath = "../../testdata/fixtures/recorded-open-pr.json"
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.Branches) != 1 || snap.Branches[0].Name != "master" || len(snap.Commits) != 135 {
+		t.Fatalf("recording lost its real shape: %+v, %d commits", snap.Branches, len(snap.Commits))
+	}
+	if len(snap.PullRequests) != 1 {
+		t.Fatalf("recording has %d PRs, want the one public open PR", len(snap.PullRequests))
+	}
+	pr := snap.PullRequests[0]
+	if pr.Number != 64 || pr.State != "open" || pr.Head != "jfehrle:debugger_ltac2" || pr.Base != "master" {
+		t.Fatalf("recording lost the real open PR: %+v", pr)
+	}
+	if len(pr.Reviews) != 1 || pr.Reviews[0].Author != "ppedrot" || pr.Reviews[0].State != "changes_requested" {
+		t.Fatalf("real review was not recorded: %+v", pr.Reviews)
+	}
+	const headSHA = "7477a535243e1ca7645c154c1b595320e74e9e3d"
+	var head repo.Commit
+	found := false
+	for _, cm := range snap.Commits {
+		if cm.SHA == headSHA {
+			head, found = cm, true
+		}
+	}
+	if !found || head.Branch != pr.Head || head.Author == "" || len(head.Parents) != 1 ||
+		head.Parents[0] != "5393bb1adf13573b014a00753b691d73fc763367" {
+		t.Fatalf("head-commit anchor was not recorded: found=%t %+v", found, head)
+	}
+
+	for _, frame := range []int{0, 7, 30} {
+		t.Run(fmt.Sprintf("frame%02d", frame), func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			args := []string{"render", "--fixture", fixturePath,
+				"--frame", fmt.Sprintf("%d", frame), "--size", "100x30", "--color=false"}
+			if code := run(args, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut.String())
+			}
+			golden, err := os.ReadFile(fmt.Sprintf("../../testdata/golden/recorded-open-pr-100x30-%02d.txt", frame))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.String() != string(golden) {
+				t.Fatalf("replay differs from golden frame %d:\n got:\n%s\nwant:\n%s", frame, out.String(), golden)
+			}
+			if strings.Contains(out.String(), "\x1b") {
+				t.Fatal("replay rendered ANSI sequences with --color=false")
+			}
+		})
+	}
+}
+
+// The open-PR recording's SHA-256 lives in its own README section, so editing
+// it without updating provenance fails here without touching other recordings.
+// The same check keeps its honest REST-derived method in place: the missing
+// authenticated GraphQL capture must never be implied by relabelling this file.
+func TestRecordedOpenPRFixtureProvenance(t *testing.T) {
+	const (
+		fixturePath = "../../testdata/fixtures/recorded-open-pr.json"
+		readmePath  = "../../testdata/fixtures/README.md"
+	)
+
+	readme, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := regexp.MustCompile("(?ms)^## `recorded-open-pr\\.json`.*?^- \\*\\*SHA-256:\\*\\*\\s+`([0-9a-f]{64})`").
+		FindSubmatch(readme)
+	if section == nil {
+		t.Fatal("README has no documented SHA-256 for the open-PR recording")
+	}
+
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(data))
+	if actual != string(section[1]) {
+		t.Fatalf("open-PR recording changed: documented SHA-256 %s, file hashes to %s", section[1], actual)
+	}
+
+	record := string(section[0])
+	restMethod := regexp.MustCompile(`(?s)\*\*Method:\*\*.*?unauthenticated REST`).MatchString(record)
+	graphqlCaveat := regexp.MustCompile(`(?s)\*\*GraphQL caveat:\*\*.*?does \*\*not\*\* come from an authenticated\s+GraphQL call`).MatchString(record)
+	if !restMethod || !graphqlCaveat {
+		t.Fatal("open-PR provenance must keep saying it is REST-derived and not a GraphQL capture")
+	}
+}
+
 // The local proof uses the same bounded read as the public recording, but its
 // one synthetic PR carries both long lists in the same object. Keeping it in a
 // helper lets the provenance test check the two public cases and the combined

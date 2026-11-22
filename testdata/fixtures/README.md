@@ -72,6 +72,114 @@ repositories are ever recorded here; private data is never committed.
   `TestRecordedPullDetailsFixtureReplaysToGolden` and
   `TestRecordedPullDetailsFixtureProvenance`.
 
+## `recorded-open-pr.json` — real public open-pull-request recording
+
+- **Source:** <https://github.com/rocq-prover/rfcs>, a public repository. The
+  recorded pull request is [#64](https://github.com/rocq-prover/rfcs/pull/64),
+  which was open at capture. Its real review came from
+  `GET /repos/rocq-prover/rfcs/pulls/64/reviews?per_page=100`; its head commit's
+  details and parent list came from
+  [`GET /repos/rocq-prover/rfcs/commits/7477a535243e1ca7645c154c1b595320e74e9e3d`](https://api.github.com/repos/rocq-prover/rfcs/commits/7477a535243e1ca7645c154c1b595320e74e9e3d).
+- **Captured:** 2026-11-21. Snapshot time
+  `2026-11-21T11:27:42.394874235Z`. The open head commit is
+  [`7477a535243e1ca7645c154c1b595320e74e9e3d`](https://github.com/rocq-prover/rfcs/commit/7477a535243e1ca7645c154c1b595320e74e9e3d),
+  authored by Jim Fehrle, with parent
+  `5393bb1adf13573b014a00753b691d73fc763367` on `master`.
+- **Method:** public, unauthenticated REST reads with no `Authorization` header;
+  no token or credential was available, used or written. The responses were
+  mapped into `repo.Snapshot` with the same field mapping as
+  `internal/github` (REST list order for commits, `user.login` and lowercased
+  `state` for reviews, head-commit `oid`/author/date/parents for the anchor).
+  The fork head lane is `head.label` (`jfehrle:debugger_ltac2`), the same
+  qualifier `listPullRequests` uses. This is a focused detail recording: the
+  repository had four upstream branches and 53 open pull requests at capture,
+  but only the base branch `master` and #64 — the one with a fetched review
+  and an anchor — are carried here. No other branch or PR's fields were
+  invented or merged into it.
+- **GraphQL caveat:** this recording does **not** come from an authenticated
+  GraphQL call. `POST /graphql` needs a token and returned HTTP 403 here, so
+  `fetchPullDetails` has still not run against a live GitHub GraphQL response.
+  As a check short of that, every field and connection argument used by
+  `pullDetailQuery` was compared on 2026-11-21 with GitHub's public GraphQL
+  reference: `reviews(first:, after:){nodes{author{login} state}
+  pageInfo{hasNextPage endCursor}}` at
+  <https://docs.github.com/en/graphql/reference/pulls#pullrequest>, and
+  `headRef{target{oid ... on Commit{oid committedDate author{name}
+  parents(first:, after:){nodes{oid} pageInfo{hasNextPage endCursor}}}}}` at
+  <https://docs.github.com/en/graphql/reference/commits#commit>. The schema
+  names check out; a real authenticated GraphQL capture is still needed to
+  fully close #21.
+- **Shape at capture:** one branch (`master`), 135 commits (134 default-branch
+  commits plus PR #64's fork head), one open pull request with one real review
+  (`ppedrot`, `changes_requested`), and no workflow runs, releases,
+  deployments or issues. The empty collections were each confirmed with one
+  public REST list read before being omitted from this focused snapshot.
+- **SHA-256:** `1059f481c5882f67ddd2422bc323e3e803c121dae4f330f9a4767bfc3cc3f019`
+- **Replay:** golden frames `testdata/golden/recorded-open-pr-*` are derived
+  from this exact file and checked in CI by `TestGolden`,
+  `TestRecordedOpenPRFixtureReplaysToGolden` and
+  `TestRecordedOpenPRFixtureProvenance`.
+
+### Finishing the authenticated GraphQL capture (#21)
+
+This section is a handoff, not a claim of completion. The recording above is
+the replay-path slice for #21; this branch does not close #21. Only a checked-in
+authenticated GraphQL capture that passes the checks below can close it.
+
+The recording above stays honest about its origin: it is mapped from public
+REST reads, so it proves the replay and golden path but never ran
+`fetchPullDetails` against a live GraphQL response. This checkout has no token,
+`gh` is not logged in, and GitHub rejects unauthenticated `POST /graphql`, so
+that proof cannot be produced here. Nothing in this section changes the
+recording's provenance or claims the GraphQL mapping was verified.
+
+Someone with a GitHub token can produce the missing proof. The opt-in probe in
+`internal/github/live_capture_test.go` is excluded from `make check` so the
+normal suite stays offline; it drives the unmodified `BuildSnapshot` transport
+against a **public** repository with a reviewed open pull request:
+
+```sh
+GITHUB_TOKEN=... go test -tags graphqlcapture ./internal/github \
+  -run TestLiveGraphQLCapture -v \
+  -args -capture-out=/tmp/open-pr-graphql.json -capture-repo=rocq-prover/rfcs
+```
+
+It fails unless a live GraphQL response filled a named review author/state and
+a head commit with an author, date and parent on a PR-only lane, then prints the
+scratch file's SHA-256. The visibility guard, that proof predicate and the 0600
+temp-file/rename write are shared with the offline suite in
+`internal/github/capture_guard_test.go`, so `make check` verifies the guard runs
+before any snapshot is built and that a recording is never world-readable, even
+though the live probe itself needs a token. It writes only public snapshot data;
+the token is never printed or saved. The equivalent CLI read is
+`percolate OWNER/REPO --record /tmp/open-pr-graphql.json` with `GITHUB_TOKEN`
+exported (never commit the token, an `Authorization` header, or private data).
+A passing run is the live proof, but #21 is only closed once that recording is
+checked in with honest provenance and reviewed goldens, as below.
+
+A successful recording alone is **not** the proof. `fetchPullDetails` calls
+`BuildSnapshot`'s GraphQL read whenever there is an open PR and fails the read
+on a GraphQL error or an undecodable shape, but it deliberately skips a PR alias
+that is missing or null and a head target that cannot supply a commit anchor
+(`internal/github/snapshot.go`). The CLI can therefore record cleanly with the
+required fields absent. The capture verifies the live selections and aliases
+only when the snapshot actually contains the values they were meant to fill.
+The opt-in probe above enforces that before it writes anything; a CLI recording
+must be checked the same way:
+
+1. Confirm at least one recorded open PR carries a real review author and state
+   and a head commit on a PR-only lane with a SHA, author, date and parent - the
+   values `fetchPullDetails` reads from the live GraphQL response. If any is
+   missing, the capture does not prove the mapping: choose another public
+   repository with a reviewed open PR and record again. Do not check it in as
+   the #21 proof.
+2. Replay the file twice and compare byte for byte, for example
+   `percolate render --fixture /tmp/open-pr-graphql.json --frame 7 --size 100x30 --color=false`.
+3. Add the snapshot under `testdata/fixtures/recorded-*.json`, document its
+   source, capture date, head SHA, method ("authenticated GraphQL via the
+   unmodified binary") and SHA-256 in this README, run `make golden`, and read
+   the new frames before committing them.
+
 ## `small.json`, `busy.json`, `scale.json` — fictional fixtures
 
 Seeded, entirely fictional data generated by `internal/repo/fixturegen`
