@@ -133,6 +133,15 @@ REST reads, so it proves the replay and golden path but never ran
 that proof cannot be produced here. Nothing in this section changes the
 recording's provenance or claims the GraphQL mapping was verified.
 
+The offline half of that gap is now tighter. `internal/github`'s GraphQL fake
+returns only the fields a query selected, `TestPullDetailQuerySelections`
+pins the aliases, arguments and selections `fetchPullDetails` reads, and
+`TestPullDetailFieldTypoIsVisibleLocally` shows a dropped `state` selection
+reaching the snapshot as an empty review state. A wrong field or alias now
+fails `make check` locally instead of passing until the first live read.
+That is a check on the query, not a live GraphQL capture, so it does not
+replace the steps below.
+
 Someone with a GitHub token can produce the missing proof. The opt-in probe in
 `internal/github/live_capture_test.go` is excluded from `make check` so the
 normal suite stays offline; it drives the unmodified `BuildSnapshot` transport
