@@ -394,6 +394,95 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	}
 }
 
+// recordedFixtures are discovered so that a new public recording is covered by
+// CLI replay and provenance checks as soon as it is checked in. The dedicated
+// tests below still pin each recording's real fields; these catch the common
+// failure of adding a file without its frames or its provenance section.
+func recordedFixtures(t *testing.T) []string {
+	t.Helper()
+	paths, err := filepath.Glob("../../testdata/fixtures/recorded-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no recorded public fixtures found")
+	}
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		names = append(names, strings.TrimSuffix(filepath.Base(path), ".json"))
+	}
+	return names
+}
+
+func TestAllRecordedFixturesReplayToGolden(t *testing.T) {
+	for _, name := range recordedFixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			fixturePath := "../../testdata/fixtures/" + name + ".json"
+			for _, frame := range []int{0, 7, 30} {
+				var out, errOut bytes.Buffer
+				args := []string{"render", "--fixture", fixturePath,
+					"--frame", fmt.Sprintf("%d", frame), "--size", "100x30", "--color=false"}
+				if code := run(args, &out, &errOut); code != 0 {
+					t.Fatalf("frame %d: exit %d: %s", frame, code, errOut.String())
+				}
+				goldenPath := fmt.Sprintf("../../testdata/golden/%s-100x30-%02d.txt", name, frame)
+				if *updateTUI {
+					if err := os.WriteFile(goldenPath, []byte(out.String()), 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				golden, err := os.ReadFile(goldenPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out.String() != string(golden) {
+					t.Fatalf("replay differs from golden frame %d", frame)
+				}
+				if strings.Contains(out.String(), "\x1b") {
+					t.Fatal("replay rendered ANSI sequences with --color=false")
+				}
+			}
+		})
+	}
+}
+
+// Every recorded fixture needs its own provenance section whose SHA-256 matches
+// the bytes being replayed. A later recording, including an authenticated
+// GraphQL capture for #21, cannot silently lose its handoff or be edited
+// without the note changing too.
+func TestAllRecordedFixturesProvenance(t *testing.T) {
+	readme, err := os.ReadFile("../../testdata/fixtures/README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range recordedFixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			var section string
+			for _, part := range strings.Split(string(readme), "\n## ") {
+				if strings.HasPrefix(part, "`"+name+".json`") {
+					section = part
+					break
+				}
+			}
+			if section == "" {
+				t.Fatalf("README has no provenance section for %s", name)
+			}
+			documented := regexp.MustCompile("(?m)\\*\\*SHA-256:\\*\\*\\s+`([0-9a-f]{64})`").
+				FindStringSubmatch(section)
+			if documented == nil {
+				t.Fatalf("provenance for %s has no SHA-256", name)
+			}
+			data, err := os.ReadFile("../../testdata/fixtures/" + name + ".json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if actual := fmt.Sprintf("%x", sha256.Sum256(data)); actual != documented[1] {
+				t.Fatalf("%s changed: documented %s, file hashes to %s", name, documented[1], actual)
+			}
+		})
+	}
+}
+
 // The recording in testdata/fixtures/recorded-hivemq.json came from a real
 // public GitHub repository (see that directory's README). Rendering it through
 // the CLI must reproduce the reviewed golden frame byte for byte: this is the

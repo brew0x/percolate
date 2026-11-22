@@ -22,12 +22,15 @@ import (
 // private write even though the probe itself can only run where a token exists.
 //
 // captureRepoPublic refuses to record a repository the token can read but that
-// GitHub does not serve publicly. captureGraphQLProof counts the fields
-// fetchPullDetails fills from a live GraphQL response: a recording proves the
-// review and head-commit selections only when both are present, because
-// fetchPullDetails skips null PR aliases and head targets with no commit anchor
-// instead of failing the read. recordPublicCapture runs those guards in the
-// same order as the probe and writes through writeCapture.
+// GitHub does not serve publicly. captureGraphQLProof counts a live recording
+// only when one open pull request carries both fields fetchPullDetails fills
+// from GraphQL: a named review state and a head commit on a PR-only lane with
+// an author, date and parent. Reviewing one PR and anchoring another is not
+// proof that the same detail query decoded both selections, because
+// fetchPullDetails skips null aliases and head targets without a commit anchor
+// instead of failing the read. The review and anchor counts are diagnostics;
+// only proofs decides whether a capture passes. recordPublicCapture runs these
+// guards in the same order as the probe and writes through writeCapture.
 func captureRepoPublic(defaultBranch string, private bool, visibility string) error {
 	if defaultBranch == "" {
 		return errors.New("GitHub repository metadata had no default branch")
@@ -38,23 +41,32 @@ func captureRepoPublic(defaultBranch string, private bool, visibility string) er
 	return nil
 }
 
-func captureGraphQLProof(snap *repo.Snapshot, defaultBranch string) (reviews, anchors int) {
-	lanes := map[string]bool{}
+func captureGraphQLProof(snap *repo.Snapshot, defaultBranch string) (proofs, reviews, anchors int) {
+	heads, anchored := map[string]bool{}, map[string]bool{}
 	for _, p := range snap.PullRequests {
-		lanes[p.Head] = true
-		for _, r := range p.Reviews {
-			if r.Author != "" && r.State != "" {
-				reviews++
-			}
-		}
+		heads[p.Head] = true
 	}
 	for _, cm := range snap.Commits {
-		if lanes[cm.Branch] && cm.Branch != defaultBranch && cm.SHA != "" &&
-			cm.Author != "" && !cm.Time.IsZero() && len(cm.Parents) > 0 {
+		if heads[cm.Branch] && cm.Branch != defaultBranch && cm.SHA != "" && cm.Author != "" &&
+			!cm.Time.IsZero() && len(cm.Parents) > 0 {
+			anchored[cm.Branch] = true
 			anchors++
 		}
 	}
-	return reviews, anchors
+	for _, p := range snap.PullRequests {
+		reviewed := false
+		for _, r := range p.Reviews {
+			if r.Author != "" && r.State != "" {
+				reviewed = true
+				reviews++
+				break
+			}
+		}
+		if reviewed && anchored[p.Head] {
+			proofs++
+		}
+	}
+	return proofs, reviews, anchors
 }
 
 // writeCapture writes a recording through a 0600 temp file and an atomic
@@ -87,10 +99,10 @@ func writeCapture(out string, data []byte) error {
 // and the private write live here so make check exercises their order and
 // result with a local server. The guard runs before any snapshot is built, so
 // a private repository the token can read is never assembled or written.
-func recordPublicCapture(ctx context.Context, client *Client, owner, repoName, out string) (data []byte, prs, reviews, anchors int, err error) {
+func recordPublicCapture(ctx context.Context, client *Client, owner, repoName, out string) (data []byte, prs, proofs, reviews, anchors int, err error) {
 	body, err := client.ListPage(ctx, fmt.Sprintf("/repos/%s/%s", owner, repoName))
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("read repository metadata: %w", err)
+		return nil, 0, 0, 0, 0, fmt.Errorf("read repository metadata: %w", err)
 	}
 	var meta struct {
 		DefaultBranch string `json:"default_branch"`
@@ -98,32 +110,29 @@ func recordPublicCapture(ctx context.Context, client *Client, owner, repoName, o
 		Visibility    string `json:"visibility"`
 	}
 	if err := json.Unmarshal(body, &meta); err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("decode repository metadata: %w", err)
+		return nil, 0, 0, 0, 0, fmt.Errorf("decode repository metadata: %w", err)
 	}
 	if err := captureRepoPublic(meta.DefaultBranch, meta.Private, meta.Visibility); err != nil {
-		return nil, 0, 0, 0, err
+		return nil, 0, 0, 0, 0, err
 	}
 	snap, err := client.BuildSnapshot(ctx, DefaultSnapshotOptions(owner, repoName))
 	if err != nil {
-		return nil, 0, 0, 0, fmt.Errorf("live read failed (a failed GraphQL detail query rejects the whole snapshot): %w", err)
+		return nil, 0, 0, 0, 0, fmt.Errorf("live read failed (a failed GraphQL detail query rejects the whole snapshot): %w", err)
 	}
 	prs = len(snap.PullRequests)
-	reviews, anchors = captureGraphQLProof(&snap, meta.DefaultBranch)
-	if prs == 0 || reviews == 0 {
-		return nil, prs, reviews, anchors, fmt.Errorf("no open PR with a GraphQL-filled review in %s/%s (%d PRs, %d reviews); choose another public repository", owner, repoName, prs, reviews)
-	}
-	if anchors == 0 {
-		return nil, prs, reviews, anchors, fmt.Errorf("no GraphQL-filled head-commit anchor in %s/%s; choose another public repository", owner, repoName)
+	proofs, reviews, anchors = captureGraphQLProof(&snap, meta.DefaultBranch)
+	if prs == 0 || proofs == 0 {
+		return nil, prs, proofs, reviews, anchors, fmt.Errorf("no open PR with both a GraphQL-filled review and a head-commit anchor in %s/%s (%d PRs, %d named reviews, %d head anchors); choose another public repository", owner, repoName, prs, reviews, anchors)
 	}
 	data, err = json.MarshalIndent(snap, "", "  ")
 	if err != nil {
-		return nil, prs, reviews, anchors, err
+		return nil, prs, proofs, reviews, anchors, err
 	}
 	data = append(data, '\n')
 	if err := writeCapture(out, data); err != nil {
-		return nil, prs, reviews, anchors, err
+		return nil, prs, proofs, reviews, anchors, err
 	}
-	return data, prs, reviews, anchors, nil
+	return data, prs, proofs, reviews, anchors, nil
 }
 
 // captureWrappedServer serves fakeRepo's transport with caller-chosen metadata
@@ -218,7 +227,7 @@ func TestRecordPublicCaptureGuardsBeforeBuild(t *testing.T) {
 			c, _ := NewClient("test-token")
 			c.baseURL = server.URL
 			out := filepath.Join(t.TempDir(), "recording.json")
-			_, _, _, _, err := recordPublicCapture(context.Background(), c, "acme", "widgets", out)
+			_, _, _, _, _, err := recordPublicCapture(context.Background(), c, "acme", "widgets", out)
 			if err == nil || !strings.Contains(err.Error(), "not a public repository") {
 				t.Fatalf("got %v, want a public-repository refusal", err)
 			}
@@ -239,12 +248,12 @@ func TestRecordPublicCaptureProofAndPrivateWrite(t *testing.T) {
 	c, _ := NewClient("test-token")
 	c.baseURL = server.URL
 	out := filepath.Join(t.TempDir(), "recording.json")
-	data, prs, reviews, anchors, err := recordPublicCapture(context.Background(), c, "acme", "widgets", out)
+	data, prs, proofs, reviews, anchors, err := recordPublicCapture(context.Background(), c, "acme", "widgets", out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if graphql == 0 || prs != 1 || reviews == 0 || anchors == 0 {
-		t.Fatalf("live proof missing: graphql=%d prs=%d reviews=%d anchors=%d", graphql, prs, reviews, anchors)
+	if graphql == 0 || prs != 1 || proofs != 1 || reviews == 0 || anchors == 0 {
+		t.Fatalf("live proof missing: graphql=%d prs=%d proofs=%d reviews=%d anchors=%d", graphql, prs, proofs, reviews, anchors)
 	}
 	if !json.Valid(data) {
 		t.Fatal("recording is not valid JSON")
@@ -291,8 +300,11 @@ func TestCaptureRepoPublic(t *testing.T) {
 
 func TestCaptureGraphQLProof(t *testing.T) {
 	head := "jfehrle:debugger_ltac2"
+	other := "other:topic"
 	when := time.Date(2026, 11, 21, 11, 27, 42, 0, time.UTC)
 	anchor := repo.Commit{SHA: "7477", Branch: head, Author: "Jim Fehrle",
+		Time: when, Parents: []string{"5393"}}
+	otherAnchor := repo.Commit{SHA: "8888", Branch: other, Author: "Someone Else",
 		Time: when, Parents: []string{"5393"}}
 	pr := repo.PullRequest{Number: 64, Head: head,
 		Reviews: []repo.Review{{Author: "ppedrot", State: "changes_requested"}}}
@@ -300,15 +312,14 @@ func TestCaptureGraphQLProof(t *testing.T) {
 		Time: when, Parents: []string{"older"}}
 
 	cases := []struct {
-		name        string
-		snap        repo.Snapshot
-		wantReviews int
-		wantAnchors int
+		name                                 string
+		snap                                 repo.Snapshot
+		wantProofs, wantReviews, wantAnchors int
 	}{
 		{
-			name:        "review and head anchor",
-			snap:        repo.Snapshot{PullRequests: []repo.PullRequest{pr}, Commits: []repo.Commit{defaultCommit, anchor}},
-			wantReviews: 1, wantAnchors: 1,
+			name:       "review and head anchor",
+			snap:       repo.Snapshot{PullRequests: []repo.PullRequest{pr}, Commits: []repo.Commit{defaultCommit, anchor}},
+			wantProofs: 1, wantReviews: 1, wantAnchors: 1,
 		},
 		{
 			name: "review without author is not proof",
@@ -317,7 +328,7 @@ func TestCaptureGraphQLProof(t *testing.T) {
 					Reviews: []repo.Review{{State: "changes_requested"}}}},
 				Commits: []repo.Commit{anchor},
 			},
-			wantReviews: 0, wantAnchors: 1,
+			wantProofs: 0, wantReviews: 0, wantAnchors: 1,
 		},
 		{
 			name: "head commit without parent is not an anchor",
@@ -325,21 +336,31 @@ func TestCaptureGraphQLProof(t *testing.T) {
 				PullRequests: []repo.PullRequest{pr},
 				Commits:      []repo.Commit{{SHA: "7477", Branch: head, Author: "Jim Fehrle", Time: when}},
 			},
-			wantReviews: 1, wantAnchors: 0,
+			wantProofs: 0, wantReviews: 1, wantAnchors: 0,
 		},
 		{
-			name:        "no pull request means no proof",
-			snap:        repo.Snapshot{Commits: []repo.Commit{anchor}},
-			wantReviews: 0, wantAnchors: 0,
+			name: "review and anchor on different PRs are not proof",
+			snap: repo.Snapshot{
+				PullRequests: []repo.PullRequest{{Number: 64, Head: "reviewer:topic",
+					Reviews: []repo.Review{{Author: "ppedrot", State: "changes_requested"}}},
+					{Number: 65, Head: other}},
+				Commits: []repo.Commit{otherAnchor},
+			},
+			wantProofs: 0, wantReviews: 1, wantAnchors: 1,
+		},
+		{
+			name:       "no pull request means no proof",
+			snap:       repo.Snapshot{Commits: []repo.Commit{anchor}},
+			wantProofs: 0, wantReviews: 0, wantAnchors: 0,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			snap := tc.snap
-			reviews, anchors := captureGraphQLProof(&snap, "master")
-			if reviews != tc.wantReviews || anchors != tc.wantAnchors {
-				t.Fatalf("got %d reviews and %d anchors, want %d and %d",
-					reviews, anchors, tc.wantReviews, tc.wantAnchors)
+			proofs, reviews, anchors := captureGraphQLProof(&snap, "master")
+			if proofs != tc.wantProofs || reviews != tc.wantReviews || anchors != tc.wantAnchors {
+				t.Fatalf("got %d proofs, %d reviews and %d anchors, want %d, %d and %d",
+					proofs, reviews, anchors, tc.wantProofs, tc.wantReviews, tc.wantAnchors)
 			}
 		})
 	}

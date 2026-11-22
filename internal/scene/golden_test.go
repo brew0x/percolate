@@ -29,15 +29,40 @@ func fixture(t testing.TB, name string) repo.Snapshot {
 	}
 	return s
 }
+
+// recordedFixtures are discovered, not listed: a new public recording checked
+// into testdata/fixtures is covered by golden and determinism checks as soon as
+// it lands. Without reviewed frames for every size the test below fails, which
+// is exactly what should happen until the maintainer has inspected them.
+func recordedFixtures(t testing.TB) []string {
+	t.Helper()
+	paths, err := filepath.Glob("../../testdata/fixtures/recorded-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no recorded public fixtures found")
+	}
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		names = append(names, strings.TrimSuffix(filepath.Base(path), ".json"))
+	}
+	return names
+}
+
+func fixtureNames(t testing.TB) []string {
+	t.Helper()
+	names := []string{"small", "busy", "scale", "jobs", "release"}
+	return append(names, recordedFixtures(t)...)
+}
+
 func TestGolden(t *testing.T) {
-	// recorded-hivemq is a real public repository recording (see
-	// testdata/fixtures/README.md); its frames are the replay proof for #3.
-	// recorded-pull-details is a focused public recording whose PRs exercise
-	// a long review history and an octopus head commit; its frames are the
-	// replay proof for the pull-detail pagination work in #19.
-	// recorded-open-pr carries a real open PR with a review and a head-commit
-	// anchor, the replay proof for the detail fields checked in #21.
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details", "recorded-open-pr"} {
+	// The recorded fixtures are real public repositories (see
+	// testdata/fixtures/README.md). recorded-hivemq replays #3;
+	// recorded-pull-details exercises the long review history and octopus head
+	// commit from #19; recorded-open-pr carries the reviewed open PR from #21.
+	// Any later recording joins this list automatically.
+	for _, name := range fixtureNames(t) {
 		// 60x7 is a supported compact frame: its shelf shares the PR row, so
 		// these frames review that the spring lifts clear of the diamond.
 		for _, size := range [][2]int{{100, 30}, {60, 20}, {60, 7}} {
@@ -81,7 +106,7 @@ func TestBusyReplayShowsEveryReviewMark(t *testing.T) {
 	}
 }
 func TestDeterminism(t *testing.T) {
-	for _, name := range []string{"small", "busy", "scale", "jobs", "release", "recorded-hivemq", "recorded-pull-details", "recorded-open-pr"} {
+	for _, name := range fixtureNames(t) {
 		s := fixture(t, name)
 		before, _ := json.Marshal(s)
 		a := scene.Frame(scene.Build(s), 7, 100, 30)
