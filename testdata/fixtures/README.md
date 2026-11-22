@@ -122,6 +122,10 @@ repositories are ever recorded here; private data is never committed.
 
 ### Finishing the authenticated GraphQL capture (#21)
 
+This section is a handoff, not a claim of completion. The recording above is
+the replay-path slice for #21; this branch does not close #21. Only a checked-in
+authenticated GraphQL capture that passes the checks below can close it.
+
 The recording above stays honest about its origin: it is mapped from public
 REST reads, so it proves the replay and golden path but never ran
 `fetchPullDetails` against a live GraphQL response. This checkout has no token,
