@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,44 @@ func TestRetryAfterWait(t *testing.T) {
 			got, ok := retryAfterWait(tt.header, tt.now)
 			if ok != tt.wantOK || got != tt.want {
 				t.Fatalf("retryAfterWait(%q) = %s, %t; want %s, %t", tt.header, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+// A refused read carries the reset GitHub recorded, so refresh scheduling can
+// wait for that instant instead of guessing a delay. Retry-After is recorded
+// as an absolute time too, relative to the caller-supplied now.
+func TestRateLimitErrorCarriesResetTime(t *testing.T) {
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	reset := now.Add(2 * time.Minute)
+	for _, tt := range []struct {
+		name, remaining, reset, retryAfter string
+		want                               time.Time
+	}{
+		{"core limit", "0", strconv.FormatInt(reset.Unix(), 10), "", reset},
+		{"secondary limit", "412", "", "120", now.Add(2 * time.Minute)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			header := make(http.Header)
+			header.Set("X-RateLimit-Remaining", tt.remaining)
+			header.Set("X-RateLimit-Reset", tt.reset)
+			header.Set("Retry-After", tt.retryAfter)
+			resp := &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("secret body for test-token")),
+			}
+			err := responseError(resp, "REST", now)
+			var limited *RateLimitError
+			if !errors.As(err, &limited) {
+				t.Fatalf("error %v carries no reset time", err)
+			}
+			if got := limited.ResetTime(); !got.Equal(tt.want) {
+				t.Fatalf("reset time %s, want %s", got, tt.want)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "test-token") {
+				t.Fatalf("body or token leaked into error: %q", err)
 			}
 		})
 	}

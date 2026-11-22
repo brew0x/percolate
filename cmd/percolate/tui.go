@@ -35,9 +35,16 @@ func tick() tea.Cmd {
 	return tea.Tick(125*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// poll schedules the next live read on GitHub's poll interval.
+// poll schedules the next live read on GitHub's ordinary poll interval.
 func poll() tea.Cmd {
-	return tea.Tick(live.Interval, func(time.Time) tea.Msg { return pollMsg{} })
+	return pollAfter(live.Interval)
+}
+
+// pollAfter schedules the next live read after an explicit delay. A refused
+// read hands over the wait derived from GitHub's recorded reset; the timer is
+// created here, on the scheduler side, never in rendering.
+func pollAfter(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg { return pollMsg{} })
 }
 
 type model struct {
@@ -54,6 +61,9 @@ type model struct {
 	// refreshErr is the last failed live read's one-line reason. Empty means
 	// the last read succeeded; there is no separate flag that could disagree.
 	refreshErr string
+	// paused records that the refused read is waiting for GitHub's recorded
+	// reset. It only changes the footer's wording; pollAfter owns the timer.
+	paused bool
 }
 
 // markIndex finds a mark by its recorded identity. A refresh can insert a
@@ -162,12 +172,17 @@ func failureReason(err error) string {
 }
 
 // failureStatus builds the failed-read row. The reason is data; "refresh
-// failed" and the retry note are framing. On a narrow row the framing goes
-// first, so an actionable detail such as a rate-limit reset time survives
-// instead of being clipped off the end of the line.
-func failureStatus(reason string, width int) string {
+// failed" and the retry note are framing. A rate-limit refusal says it is
+// paused until reset rather than promising an ordinary retry. On a narrow row
+// the framing goes first, so an actionable detail such as a rate-limit reset
+// time survives instead of being clipped off the end of the line.
+func failureStatus(reason string, paused bool, width int) string {
+	note := "; retrying"
+	if paused {
+		note = "; paused until reset"
+	}
 	for _, s := range []string{
-		"refresh failed: " + reason + "; retrying",
+		"refresh failed: " + reason + note,
 		"failed: " + reason,
 		reason,
 	} {
@@ -195,7 +210,7 @@ func (m model) footerKey() []string {
 	if m.refreshErr != "" {
 		// A failure outranks a transient browser notice: both compete for the
 		// same row, and the reason is what someone needs to report it.
-		status = failureStatus(m.refreshErr, m.width)
+		status = failureStatus(m.refreshErr, m.paused, m.width)
 	} else {
 		status = fit(clean(m.notice), m.width)
 	}
@@ -280,9 +295,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// A failed refresh is a status note with its own reason, never a
 			// fabricated scene and never a stale reason from an earlier poll.
 			m.refreshErr = failureReason(v.err)
-			return m, poll()
+			now := time.Now()
+			// Only a reset still ahead is a pause; an already passed reset
+			// resumes the ordinary cadence and must not claim otherwise.
+			m.paused = live.ResetTimeOf(v.err).After(now)
+			return m, pollAfter(live.RetryDelay(v.err, now, live.Interval))
 		}
 		m.refreshErr = ""
+		m.paused = false
 		keep := m.selectionID()
 		if !live.Equal(m.cur, v.snap) {
 			m.prev, m.cur = m.cur, v.snap

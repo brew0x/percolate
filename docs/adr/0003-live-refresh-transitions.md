@@ -25,7 +25,12 @@ schedules ticks and polls; it owns which two snapshots bracket a transition,
 but passes no clock to either renderer. Change detection (`live.Equal`)
 compares recorded repository state and ignores `Snapshot.Now`: a fresh capture
 timestamp from `BuildSnapshot` is metadata about when a read happened, not a
-change to what was read, so an unchanged poll never starts a transition.
+change to what was read, so an unchanged poll never starts a transition. A
+rate-limit refusal carries GitHub's recorded reset instant from the transport;
+both the TUI and `Watcher` schedule the next read for that instant instead of
+the ordinary 60-second tick, and return to the ordinary interval after a
+successful read. The wait is computed by the scheduler, never by rendering, and
+is never guessed from a failed poll.
 
 ## Consequences
 A recorded pair of snapshots plus a frame index reproduces any in-between

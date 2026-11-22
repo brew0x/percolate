@@ -128,6 +128,21 @@ func (c *Client) Requests() int {
 	return c.requests
 }
 
+// RateLimitError is a refused read whose response recorded when GitHub's read
+// budget resets. ResetAt is that recorded instant in UTC, never a guess and
+// never response text; message is the one safe line built by responseError.
+// Refresh schedulers use ResetTime to wait for the recorded reset, and the CLI
+// uses it to say that a read is paused rather than ordinarily retrying.
+type RateLimitError struct {
+	ResetAt time.Time
+	message string
+}
+
+func (e *RateLimitError) Error() string { return e.message }
+
+// ResetTime reports the recorded instant a retry may resume.
+func (e *RateLimitError) ResetTime() time.Time { return e.ResetAt }
+
 // responseError turns a non-200 status into one safe line. Rate-limit
 // responses report when to come back; response bodies never appear. The caller
 // supplies now so tests can hold the clock still without waiting on it.
@@ -135,16 +150,19 @@ func responseError(resp *http.Response, kind string, now time.Time) error {
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-				wait := time.Unix(reset, 0).Sub(now).Round(time.Second)
+				resetAt := time.Unix(reset, 0).UTC()
+				wait := resetAt.Sub(now).Round(time.Second)
 				if wait < 0 {
 					wait = 0
 				}
-				return fmt.Errorf("GitHub rate limit exhausted; resets in %s", wait)
+				return &RateLimitError{ResetAt: resetAt,
+					message: fmt.Sprintf("GitHub rate limit exhausted; resets in %s", wait)}
 			}
 			return errors.New("GitHub rate limit exhausted")
 		}
 		if wait, ok := retryAfterWait(resp.Header.Get("Retry-After"), now); ok {
-			return fmt.Errorf("GitHub rate limited; retry after %s", wait)
+			return &RateLimitError{ResetAt: now.Add(wait).UTC(),
+				message: fmt.Sprintf("GitHub rate limited; retry after %s", wait)}
 		}
 	}
 	return fmt.Errorf("GitHub %s returned HTTP %d", kind, resp.StatusCode)
