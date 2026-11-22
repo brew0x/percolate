@@ -1,0 +1,128 @@
+{
+  "now": "2026-11-22T13:46:19.963423659Z",
+  "branches": [
+    {
+      "name": "master"
+    },
+    {
+      "name": "fix/863-literal-hash-names"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "2903d87481b80ceef6b1baf4766c5eb22c715c0c",
+      "parents": [
+        "66d8c19d70cad9a418247f126ce17d237b88cbba"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-22T13:10:00Z"
+    },
+    {
+      "sha": "66d8c19d70cad9a418247f126ce17d237b88cbba",
+      "parents": [
+        "e6907524b4e2b522fb3eb2546780aba9d9d012d7",
+        "91e0300e7e3f36f6fa56b42959ad2c5d5ea5f110"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-22T12:38:59Z"
+    },
+    {
+      "sha": "91e0300e7e3f36f6fa56b42959ad2c5d5ea5f110",
+      "parents": [
+        "830523081a689c8177120cc550bdf591f11f60b5"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-21T16:26:18Z"
+    },
+    {
+      "sha": "830523081a689c8177120cc550bdf591f11f60b5",
+      "parents": [
+        "b95a5907d26f83f4b8bee0dfc9dfdb9cc9d43794"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-21T16:23:48Z"
+    },
+    {
+      "sha": "b95a5907d26f83f4b8bee0dfc9dfdb9cc9d43794",
+      "parents": [
+        "f9bb7c4ec02e3fa03e1eb0c3cd5c6d93c78aee24"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-21T16:23:48Z"
+    },
+    {
+      "sha": "f9bb7c4ec02e3fa03e1eb0c3cd5c6d93c78aee24",
+      "parents": [
+        "e6907524b4e2b522fb3eb2546780aba9d9d012d7"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-21T16:23:48Z"
+    },
+    {
+      "sha": "e6907524b4e2b522fb3eb2546780aba9d9d012d7",
+      "parents": [
+        "7dcb107d7cc8c07a782ad6a5c8db8c3bcac92f3b",
+        "526a7024a90693a57c3a838b72a0723356354047"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-22T12:18:44Z"
+    },
+    {
+      "sha": "526a7024a90693a57c3a838b72a0723356354047",
+      "parents": [
+        "0c26000148296484bd7d0930dee7b14b45ba2a71"
+      ],
+      "branch": "master",
+      "author": "Tony Narlock",
+      "time": "2026-11-22T11:50:09Z"
+    },
+    {
+      "sha": "325cf9c2a71a21e3450b1747a2607d230f02b195",
+      "parents": [
+        "9ee8a5bb142989aad18eed100009f775352212e2"
+      ],
+      "branch": "fix/863-literal-hash-names",
+      "author": "Tony Narlock",
+      "time": "2026-11-22T00:12:54Z"
+    }
+  ],
+  "issues": [
+    {
+      "number": 863,
+      "title": "`#` in names, titles, and `start_directory` expands as a tmux format",
+      "state": "open",
+      "closed_by": 901
+    },
+    {
+      "number": 886,
+      "title": "Decide home for pure-Python VT tracker (`libtmux.test` vs package)",
+      "state": "open",
+      "closed_by": 0
+    },
+    {
+      "number": 884,
+      "title": "Add `ControlClient` with `%subscription-changed` and hook-safe guards",
+      "state": "open",
+      "closed_by": 0
+    }
+  ],
+  "pull_requests": [
+    {
+      "number": 901,
+      "head": "fix/863-literal-hash-names",
+      "base": "master",
+      "state": "open",
+      "reviews": []
+    }
+  ],
+  "runs": null,
+  "releases": null,
+  "deployments": null
+}

@@ -116,16 +116,22 @@ the REST/GraphQL pull-request match. A wrong field or alias therefore fails
 `make check` here; that is not the same as a live GraphQL response having been
 decoded.
 
-The issue and closing-reference shape is likewise proven offline: the
-field-aware GraphQL fake returns only selected `closingIssuesReferences` nodes,
-`TestPullDetailQuerySelections` pins their alias and arguments,
-`TestBuildSnapshotReadsOpenIssuesAndRealClosingReferences` checks that a PR
-list item and a closed issue are excluded and that only a real reference fills
-`closed_by`, and the typo test shows a dropped field reaching the snapshot as
-an unlinked spring. No public recording of this shape is checked in: capturing
-one needs a GitHub token for `closingIssuesReferences`, and this checkout has
-none. The remaining live capture and provenance work is left as a follow-up
-issue; no recording is claimed until it exists.
+The issue and closing-reference shape is proven both offline and by a public
+recording: the field-aware GraphQL fake returns only selected
+`closingIssuesReferences` nodes, `TestPullDetailQuerySelections` pins their
+alias and arguments, `TestBuildSnapshotReadsOpenIssuesAndRealClosingReferences`
+checks that a PR list item and a closed issue are excluded and that only a real
+reference fills `closed_by`, and the typo test shows a dropped field reaching
+the snapshot as an unlinked spring.
+`testdata/fixtures/recorded-issues.json` is a real public snapshot of
+`tmux-python/libtmux` read through unauthenticated REST: it carries a feeding
+issue (#863, closed by open PR #901), two unlinked issues (#886 and #884) and
+their reviewed golden frames. Its `closed_by` comes from GitHub's REST issue
+timeline cross-reference plus PR #901's closing keyword, not from numbering or
+proximity; the live read still fills `closed_by` only from a GraphQL
+`closingIssuesReferences` node. That connection needs a token, so the recording
+proves the JSON and golden shape rather than a live GraphQL decode; provenance
+and the exact source endpoints are in `testdata/fixtures/README.md`.
 
 Tests use local httptest servers and injected credential-helper output. They
 require no GitHub access, real credentials, or changes to rendering. The

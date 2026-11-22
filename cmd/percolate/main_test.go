@@ -501,6 +501,73 @@ func TestAllRecordedFixturesProvenance(t *testing.T) {
 	}
 }
 
+// The public issue recording must keep both spring kinds and the feed that
+// joins one of them to a real open pull request. The golden alone is only
+// eyeballed; this pins the reviewed frame's decisive marks in CI so a later
+// recording or rendering change cannot quietly drop either one.
+func TestRecordedIssuesShowsFeedingAndUnlinkedSprings(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/fixtures/recorded-issues.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatal(err)
+	}
+	closedBy := map[int]int{}
+	for _, issue := range snap.Issues {
+		closedBy[issue.Number] = issue.ClosedBy
+	}
+	if closedBy[863] != 901 || closedBy[886] != 0 || closedBy[884] != 0 {
+		t.Fatalf("recording lost its real closing references: %+v", closedBy)
+	}
+	var hasPR bool
+	for _, pr := range snap.PullRequests {
+		if pr.Number == 901 && pr.State == "open" {
+			hasPR = true
+		}
+	}
+	if !hasPR {
+		t.Fatal("recording lost the pull request named by the closing reference")
+	}
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"render", "--fixture", "../../testdata/fixtures/recorded-issues.json",
+		"--frame", "0", "--size", "100x30", "--color=false"}, &out, &errOut); code != 0 {
+		t.Fatalf("replay exit %d: %s", code, errOut.String())
+	}
+	lines := strings.Split(out.String(), "\n")
+	feedCol, feedingRow := -1, -1
+	for y, line := range lines {
+		if i := strings.Index(line, "∿#863"); i >= 0 {
+			feedCol, feedingRow = i, y
+			break
+		}
+	}
+	if feedCol < 0 {
+		t.Fatalf("reviewed frame has no feeding ∿#863 spring:\n%s", out.String())
+	}
+	feeds, margin := 0, 0
+	for y, line := range lines {
+		runes := []rune(line)
+		if y > feedingRow && feedCol < len(runes) && runes[feedCol] == '⋮' {
+			feeds++
+		}
+		if len(runes) > 0 && runes[0] == '∿' {
+			margin++
+		}
+	}
+	if feeds < 3 {
+		t.Fatalf("feeding spring has no ⋮ feed down the head lane (%d feed cells):\n%s", feeds, out.String())
+	}
+	if margin < 2 {
+		t.Fatalf("frame lost the unlinked margin springs (%d found):\n%s", margin, out.String())
+	}
+	if !strings.Contains(out.String(), "◇") {
+		t.Fatalf("frame lost the pull request diamond the feed runs into:\n%s", out.String())
+	}
+}
+
 // The recording in testdata/fixtures/recorded-hivemq.json came from a real
 // public GitHub repository (see that directory's README). Rendering it through
 // the CLI must reproduce the reviewed golden frame byte for byte: this is the

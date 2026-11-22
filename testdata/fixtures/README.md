@@ -208,17 +208,51 @@ must be checked the same way:
    The provenance test also requires the new section's SHA-256 to match the
    bytes being replayed.
 
-## Issue and closing-reference recordings — not yet captured
+## `recorded-issues.json` — real public open-issue / closing-reference recording
 
-No `recorded-*.json` in this checkout carries an open issue with a real closing
-reference. The live source now reads open issues from the public REST issues
-endpoint and fills `closed_by` only from a pull request's
-`closingIssuesReferences` in GraphQL; that field needs a token, which was not
-available here. The JSON shape is therefore proved by the field-aware offline
-transport tests in `internal/github`, and the visual shape by the reviewed
-`small-*` and `busy-*` golden frames (a feeding `∿#N` with its `⋮` feed and a
-dim unlinked `∿` in the margin). A public recording with provenance and its own
-goldens is still outstanding; no fictional data is labelled as a recording.
+- **Source:** <https://github.com/tmux-python/libtmux>, a public Python library.
+  The recorded objects are open issue [#863](https://github.com/tmux-python/libtmux/issues/863),
+  open issues [#886](https://github.com/tmux-python/libtmux/issues/886) and
+  [#884](https://github.com/tmux-python/libtmux/issues/884), and open pull request
+  [#901](https://github.com/tmux-python/libtmux/pull/901).
+- **Captured:** 2026-11-22. Snapshot time `2026-11-22T13:46:19.963423659Z`.
+  PR #901's head commit is
+  [`325cf9c2a71a21e3450b1747a2607d230f02b195`](https://github.com/tmux-python/libtmux/commit/325cf9c2a71a21e3450b1747a2607d230f02b195),
+  authored by Tony Narlock, with parent
+  `9ee8a5bb142989aad18eed100009f775352212e2`; the default branch is `master`.
+- **Method:** public, unauthenticated REST reads with no `Authorization` header;
+  no token, credential or authenticated GraphQL endpoint was used. The JSON is
+  a `repo.Snapshot` assembled from those responses with the same field mapping
+  as `internal/github` (REST list order, `commit.author` name and date, parent
+  SHAs, the bare same-repo head ref `fix/863-literal-hash-names`, lowercased
+  state). This is a focused recording: it carries the default branch, its eight
+  most recent commits, PR #901's head commit, three open issues and PR #901.
+  The repository also had open workflow runs, releases and deployments at
+  capture; they were read but omitted because they are not part of the
+  issue/closing-reference shape. PR #901's review list was read through public
+  REST and was empty, so its `reviews` are empty.
+- **Closing-reference provenance:** issue #863's `closed_by` is `901` because
+  GitHub's REST issue timeline for #863
+  (`GET /repos/tmux-python/libtmux/issues/863/timeline`, read 2026-11-22)
+  contains a `cross-referenced` event whose `source.issue` is PR #901 — it
+  carries a `pull_request` object — and PR #901's body uses the canonical
+  closing keyword "Fixes #863". That is the same issue-to-PR relationship the
+  GraphQL `closingIssuesReferences` connection exposes. Issues #886 and #884
+  have `closed_by` `0`: their timelines contain no PR-sourced cross-reference
+  and no open pull request's body names them with a closing keyword. No link
+  was inferred from numbering, proximity or branch names. The timeline and
+  closing keyword are GitHub's own structured record of the link;
+  `closingIssuesReferences` itself needs a token and was not queried here, so
+  this recording proves the snapshot JSON and golden shape, not a live GraphQL
+  decode. The live read's field mapping stays proved offline by the
+  field-aware transport tests in `internal/github`.
+- **SHA-256:** `9954000dc88b282012855b8623ead7466473308c5be94ffc28f4e8429d6fcee6`
+- **Replay:** golden frames `testdata/golden/recorded-issues-*` are derived from
+  this exact file and checked in CI by `TestGolden`,
+  `TestAllRecordedFixturesReplayToGolden` and
+  `TestAllRecordedFixturesProvenance`. Frame 0 shows a feeding `∿#863` with its
+  `⋮` feed down PR #901's head lane and the two unlinked `∿` springs in the
+  far-left margin.
 
 ## `small.json`, `busy.json`, `scale.json` — fictional fixtures
 
