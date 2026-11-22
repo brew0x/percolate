@@ -15,11 +15,12 @@
 // private write live in the untagged capture_guard_test.go so make check tests
 // their order and mode with a local server; only token resolution and logging
 // stay here. The token is never printed or persisted. A pass shows the real
-// GraphQL selections for reviews and head-commit anchors decoded into a
-// snapshot, and fails if either field is absent, because fetchPullDetails skips
-// null aliases rather than erroring. The proof is complete only once someone
-// with a token runs this and the resulting recording, provenance and goldens
-// are reviewed and checked in. This probe does not by itself close #21.
+// GraphQL selections for reviews and head-commit anchors decoded into the same
+// open pull request, and fails unless that pairing exists, because
+// fetchPullDetails skips null aliases rather than erroring. The proof is
+// complete only once someone with a token runs this and the resulting recording,
+// provenance and goldens are reviewed and checked in. This probe does not by
+// itself close #21.
 package github
 
 import (
@@ -56,13 +57,14 @@ func TestLiveGraphQLCapture(t *testing.T) {
 	}
 
 	// The shared helper checks that the token can read a public repository
-	// before any snapshot is built, then requires a live GraphQL review and
-	// head-commit anchor before writing 0600. Offline tests cover that order.
-	data, prs, reviews, anchors, err := recordPublicCapture(ctx, client, parts[0], parts[1], *captureOut)
+	// before any snapshot is built, then requires one live GraphQL review and
+	// head-commit anchor on the same PR before writing 0600. Offline tests
+	// cover that order and the pairing.
+	data, prs, proofs, reviews, anchors, err := recordPublicCapture(ctx, client, parts[0], parts[1], *captureOut)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("recorded %s: %d open PRs, %d reviews, %d head-commit anchors", *captureRepo, prs, reviews, anchors)
+	t.Logf("recorded %s: %d open PRs, %d PRs with both fields, %d reviews, %d head-commit anchors", *captureRepo, prs, proofs, reviews, anchors)
 	t.Logf("recording: %s", *captureOut)
 	t.Logf("SHA-256: %x", sha256.Sum256(data))
 }

@@ -154,8 +154,11 @@ GITHUB_TOKEN=... go test -tags graphqlcapture ./internal/github \
 ```
 
 It fails unless a live GraphQL response filled a named review author/state and
-a head commit with an author, date and parent on a PR-only lane, then prints the
-scratch file's SHA-256. The visibility guard, that proof predicate and the 0600
+a head commit with an author, date and parent on a PR-only lane **of the same
+open pull request**, then prints the scratch file's SHA-256. A review on one PR
+and an anchor on another is deliberately not proof: each query handles many PR
+aliases, and only a paired result shows that one detail response decoded both
+selections. The visibility guard, that proof predicate and the 0600
 temp-file/rename write are shared with the offline suite in
 `internal/github/capture_guard_test.go`, so `make check` verifies the guard runs
 before any snapshot is built and that a recording is never world-readable, even
@@ -176,18 +179,24 @@ only when the snapshot actually contains the values they were meant to fill.
 The opt-in probe above enforces that before it writes anything; a CLI recording
 must be checked the same way:
 
-1. Confirm at least one recorded open PR carries a real review author and state
-   and a head commit on a PR-only lane with a SHA, author, date and parent - the
-   values `fetchPullDetails` reads from the live GraphQL response. If any is
-   missing, the capture does not prove the mapping: choose another public
-   repository with a reviewed open PR and record again. Do not check it in as
-   the #21 proof.
+1. Confirm at least one recorded open PR carries both a real review author and
+   state and, on that same PR's head lane, a commit with a SHA, author, date and
+   parent - the values `fetchPullDetails` reads from the live GraphQL response.
+   If any is missing, the capture does not prove the mapping: choose another
+   public repository with a reviewed open PR and record again. Do not check it
+   in as the #21 proof.
 2. Replay the file twice and compare byte for byte, for example
    `percolate render --fixture /tmp/open-pr-graphql.json --frame 7 --size 100x30 --color=false`.
-3. Add the snapshot under `testdata/fixtures/recorded-*.json`, document its
-   source, capture date, head SHA, method ("authenticated GraphQL via the
-   unmodified binary") and SHA-256 in this README, run `make golden`, and read
-   the new frames before committing them.
+3. Add the snapshot under `testdata/fixtures/recorded-*.json` and document its
+   source, capture date, head SHA, method (authenticated GraphQL through
+   `Client.BuildSnapshot`, or through the unmodified binary if the CLI was used)
+   and SHA-256 in a top-level section headed with that filename, as the three
+   existing recordings do. Then run `make golden`: both the scene and CLI replay
+   tests discover every
+   `recorded-*.json`, so this writes the new recording's nine scene frames and
+   its three `100x30` CLI frames. Read the new frames before committing them.
+   The provenance test also requires the new section's SHA-256 to match the
+   bytes being replayed.
 
 ## `small.json`, `busy.json`, `scale.json` — fictional fixtures
 
