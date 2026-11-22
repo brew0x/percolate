@@ -33,6 +33,15 @@ func pullItem(i int) string {
 	return fmt.Sprintf(`{"number":%d,"state":"open","head":{"ref":"flow-%d"},"base":{"ref":"main"}}`, i, i)
 }
 
+// issue numbers live far from the fake PR numbers: GitHub issues and PRs share
+// one sequence, so a link must come from a closing reference rather than from
+// "nearby" numbers.
+func issueNumber(i int) int { return 10000 + i }
+
+func issueItem(i int) string {
+	return fmt.Sprintf(`{"number":%d,"title":"issue %d","state":"open"}`, issueNumber(i), i)
+}
+
 func runItem(i int) string {
 	return fmt.Sprintf(`{"id":%d,"head_sha":"%s","status":"completed","conclusion":"success"}`, i, sha(i))
 }
@@ -68,6 +77,11 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 			_, _ = w.Write([]byte(pageString(page, prs, branchItem)))
 		case r.URL.Path == "/repos/acme/widgets/commits":
 			_, _ = w.Write([]byte(pageString(page, prs, commitItem)))
+		case r.URL.Path == "/repos/acme/widgets/issues":
+			if r.URL.Query().Get("state") != "open" {
+				t.Errorf("lost issue filter: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(pageString(page, prs+1, issueItem)))
 		case r.URL.Path == "/repos/acme/widgets/pulls":
 			if r.URL.Query().Get("state") != "open" {
 				t.Errorf("lost pull request filter: %s", r.URL.RawQuery)
@@ -134,6 +148,9 @@ func fakePullDetail(query string, number int, withNumber bool) string {
 	if strings.Contains(query, "reviews(first:") {
 		fields = append(fields, fakeReviews(query))
 	}
+	if strings.Contains(query, "closingIssuesReferences(first:") {
+		fields = append(fields, fakeClosingIssues(query, number))
+	}
 	if strings.Contains(query, "headRef{target{") {
 		fields = append(fields, fakeHeadRef(query, number))
 	}
@@ -166,6 +183,20 @@ func fakeReviews(query string) string {
 		fields = append(fields, `"pageInfo":{"hasNextPage":false,"endCursor":""}`)
 	}
 	return `"reviews":{` + strings.Join(fields, ",") + `}`
+}
+
+// fakeClosingIssues answers the closing-reference selection. The fake only
+// returns the fields the query selected, so dropping nodes{number} or the
+// connection itself leaves no link for the snapshot to pick up.
+func fakeClosingIssues(query string, number int) string {
+	var fields []string
+	if strings.Contains(query, "nodes{number}") {
+		fields = append(fields, fmt.Sprintf(`"nodes":[{"number":%d}]`, issueNumber(number)))
+	}
+	if strings.Contains(query, "pageInfo{hasNextPage endCursor}") {
+		fields = append(fields, `"pageInfo":{"hasNextPage":false,"endCursor":""}`)
+	}
+	return `"closingIssuesReferences":{` + strings.Join(fields, ",") + `}`
 }
 
 // fakeHeadRef answers the head-commit selection. The oid is returned wherever
@@ -216,10 +247,19 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Branches) != 500 || len(snap.Commits) != 1000 || len(snap.PullRequests) != 500 ||
-		len(snap.Runs) != 500 || len(snap.Releases) != 150 || len(snap.Deployments) != 100 {
-		t.Fatalf("counts: %d branches, %d commits, %d PRs, %d runs, %d releases, %d deployments",
-			len(snap.Branches), len(snap.Commits), len(snap.PullRequests), len(snap.Runs), len(snap.Releases), len(snap.Deployments))
+	if len(snap.Branches) != 500 || len(snap.Commits) != 1000 || len(snap.Issues) != 501 ||
+		len(snap.PullRequests) != 500 || len(snap.Runs) != 500 || len(snap.Releases) != 150 ||
+		len(snap.Deployments) != 100 {
+		t.Fatalf("counts: %d branches, %d commits, %d issues, %d PRs, %d runs, %d releases, %d deployments",
+			len(snap.Branches), len(snap.Commits), len(snap.Issues), len(snap.PullRequests),
+			len(snap.Runs), len(snap.Releases), len(snap.Deployments))
+	}
+	if snap.Issues[2].Number != issueNumber(3) || snap.Issues[2].ClosedBy != 3 {
+		t.Fatalf("closing reference not recorded: %+v", snap.Issues[2])
+	}
+	// The fake's extra issue has no closing reference in any PR detail.
+	if snap.Issues[500].ClosedBy != 0 {
+		t.Fatalf("unreferenced issue was linked: %+v", snap.Issues[500])
 	}
 	pr := snap.PullRequests[2]
 	if pr.Number != 3 || len(pr.Reviews) != 2 || pr.Reviews[0].Author != "sage" || pr.Reviews[0].State != "approved" {
@@ -241,8 +281,10 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	if tips != 1 || linked != 1 {
 		t.Fatalf("pull-request head anchor wrong: %d tips, %d linked", tips, linked)
 	}
-	if *calls != 49 || *calls >= 300 {
-		t.Fatalf("requests=%d, want 49 and under 300", *calls)
+	// Six issue pages join the previous 49 requests; details still share the
+	// same batched GraphQL queries rather than adding a request per PR.
+	if *calls != 55 || *calls >= 300 {
+		t.Fatalf("requests=%d, want 55 and under 300", *calls)
 	}
 	if snap.Now.IsZero() {
 		t.Fatal("missing snapshot time")
@@ -263,7 +305,7 @@ func TestBuildSnapshotAboveOldCaps(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"name":"main"}]`))
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			_, _ = w.Write([]byte(pageString(page, many, commitItem)))
-		case strings.HasSuffix(r.URL.Path, "/pulls"):
+		case strings.HasSuffix(r.URL.Path, "/issues"), strings.HasSuffix(r.URL.Path, "/pulls"):
 			_, _ = w.Write([]byte(`[]`))
 		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
 			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":%s}`, many, pageString(page, many, runItem))
@@ -286,7 +328,7 @@ func TestBuildSnapshotAboveOldCaps(t *testing.T) {
 }
 
 func TestBuildSnapshotFailsClean(t *testing.T) {
-	for _, mode := range []string{"runs", "graphql", "branches", "format"} {
+	for _, mode := range []string{"runs", "graphql", "branches", "issues", "format"} {
 		t.Run(mode, func(t *testing.T) {
 			server, _ := fakeRepo(t, 5)
 			defer server.Close()
@@ -310,6 +352,11 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 						_, _ = w.Write([]byte(pageString(1, 100, func(i int) string { return `{"name":"b"}` })))
 						return
 					}
+				case "issues":
+					if strings.HasSuffix(r.URL.Path, "/issues") {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
 				case "format":
 					if strings.HasSuffix(r.URL.Path, "/commits") {
 						_, _ = w.Write([]byte(`[{"sha":42}]`))
@@ -324,9 +371,9 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 			if err == nil {
 				t.Fatalf("accepted failure mode %q", mode)
 			}
-			if !snap.Now.IsZero() || len(snap.Commits)+len(snap.PullRequests)+len(snap.Runs)+
+			if !snap.Now.IsZero() || len(snap.Commits)+len(snap.Issues)+len(snap.PullRequests)+len(snap.Runs)+
 				len(snap.Branches)+len(snap.Releases)+len(snap.Deployments) != 0 {
-				t.Fatalf("partial snapshot returned: %d objects", len(snap.Commits)+len(snap.PullRequests)+
+				t.Fatalf("partial snapshot returned: %d objects", len(snap.Commits)+len(snap.Issues)+len(snap.PullRequests)+
 					len(snap.Runs)+len(snap.Branches)+len(snap.Releases)+len(snap.Deployments))
 			}
 		})
@@ -346,6 +393,7 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 	}{
 		{"/branches", "branch", opts.MaxBranches, branchItem},
 		{"/commits", "commit", opts.MaxCommits, commitItem},
+		{"/issues", "issue", opts.MaxIssues, issueItem},
 		{"/pulls", "pull request", opts.MaxPullRequests, pullItem},
 		{"/actions/runs", "run", opts.MaxRuns, runItem},
 		{"/releases", "release", opts.MaxReleases, releaseItem},
@@ -375,7 +423,7 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.probe) {
 				t.Fatalf("accepted over-cap %s read: %v", tt.path, err)
 			}
-			if !snap.Now.IsZero() || len(snap.Commits)+len(snap.PullRequests)+len(snap.Runs)+
+			if !snap.Now.IsZero() || len(snap.Commits)+len(snap.Issues)+len(snap.PullRequests)+len(snap.Runs)+
 				len(snap.Branches)+len(snap.Releases)+len(snap.Deployments) != 0 {
 				t.Fatal("partial snapshot returned")
 			}
@@ -384,23 +432,25 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 }
 
 // Keep the worst-case request count in the docs checkable: 1 meta + 11 branch
-// + 51 commit + 11 pull + 51 run + 11 release + 11 deployment pages + 80
-// detail queries (a first page and one follow-up for each of 40 batches), all
-// inside the 250-request budget.
+// + 51 commit + 11 issue + 11 pull + 51 run + 11 release + 11 deployment pages
+// + 80 detail queries (a first page and one follow-up for each of 40 batches),
+// all inside the 250-request budget. Closing references ride in those detail
+// queries; they add no request per PR.
 func TestDefaultPlannedRequests(t *testing.T) {
 	opts := DefaultSnapshotOptions("acme", "widgets")
-	if got := opts.plannedRequests(); got != 227 {
-		t.Fatalf("plannedRequests()=%d, want the documented 227", got)
+	if got := opts.plannedRequests(); got != 238 {
+		t.Fatalf("plannedRequests()=%d, want the documented 238", got)
 	}
-	if 227 > opts.MaxRequests {
+	if 238 > opts.MaxRequests {
 		t.Fatal("documented plan exceeds the default request budget")
 	}
 }
 
 // paginatedDetails answers the first detail page and one follow-up for a
-// single pull request with more than 100 reviews and more than three parents.
-// The values are generated, but they are served through the same GraphQL seam
-// a real read uses: the test proves the client reads and joins both pages.
+// single pull request with more than 100 reviews, more than three parents and
+// two closing issue references. The values are generated, but they are served
+// through the same GraphQL seam a real read uses: the test proves the client
+// reads and joins both pages of each connection.
 func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.HandlerFunc {
 	t.Helper()
 	inner, _ := fakeRepo(t, 1)
@@ -420,14 +470,18 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 			_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
 			return
 		}
-		var reviews, parents []string
+		var reviews, parents, closings []string
 		more := !follow
+		closingMore := !follow || mode == "closing-third-page"
 		first, last := 0, 99
 		parentFirst, parentLast := 0, 3
 		if follow {
 			first, last = 100, 102
 			parentFirst, parentLast = 4, 5
 			more = mode == "third-page"
+			closings = []string{fmt.Sprintf(`{"number":%d}`, issueNumber(2))}
+		} else {
+			closings = []string{fmt.Sprintf(`{"number":%d}`, issueNumber(1))}
 		}
 		for i := first; i <= last; i++ {
 			reviews = append(reviews, fmt.Sprintf(`{"author":{"login":"reviewer-%d"},"state":"APPROVED"}`, i))
@@ -438,6 +492,11 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 		cursor := ""
 		if more {
 			cursor = "next"
+		}
+		closingField := ""
+		if strings.Contains(query, "closingIssuesReferences(first:") {
+			closingField = fmt.Sprintf(`"closingIssuesReferences":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"closing-next"}},`,
+				strings.Join(closings, ","), closingMore)
 		}
 		// A real GraphQL response carries only fields the query requests.
 		// The follow-up handler verifies the head oid before extending its
@@ -454,9 +513,11 @@ func paginatedDetails(t *testing.T, calls, graphqlCalls *int, mode string) http.
 		}
 		_, _ = fmt.Fprintf(w, `{"data":{"repository":{"p0":{%s`+
 			`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}},`+
+			`%s`+
 			`"headRef":{"target":{%s"committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},`+
 			`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"%s"}}}}}}}}`,
-			numberField, strings.Join(reviews, ","), more, cursor, oidField, strings.Join(parents, ","), more, cursor)
+			numberField, strings.Join(reviews, ","), more, cursor, closingField,
+			oidField, strings.Join(parents, ","), more, cursor)
 	}
 }
 
@@ -473,6 +534,7 @@ func TestPullDetailQuerySelections(t *testing.T) {
 		`p0:pullRequest(number:7){`,
 		`p0:pullRequest(number:7){number `,
 		`reviews(first:100){nodes{author{login} state} pageInfo{hasNextPage endCursor}}`,
+		`closingIssuesReferences(first:100){nodes{number} pageInfo{hasNextPage endCursor}}`,
 		`headRef{target{oid ... on Commit{oid committedDate author{name}`,
 		`parents(first:100){nodes{oid} pageInfo{hasNextPage endCursor}}`,
 	} {
@@ -488,11 +550,13 @@ func TestPullDetailQuerySelections(t *testing.T) {
 	// still needs the head oid so the join can verify commit identity.
 	follow := pullDetailQuery(prs, []detailCursor{{
 		review: "reviews-cursor", needReview: true,
+		closing: "closing-cursor", needClosing: true,
 		parent: "parents-cursor", needParent: true,
 	}})
 	for _, want := range []string{
 		`p0:pullRequest(number:7){number `,
 		`reviews(first:100,after:"reviews-cursor"){nodes{author{login} state} pageInfo{hasNextPage endCursor}}`,
+		`closingIssuesReferences(first:100,after:"closing-cursor"){nodes{number} pageInfo{hasNextPage endCursor}}`,
 		`headRef{target{oid ... on Commit{oid parents(first:100,after:"parents-cursor"){nodes{oid} pageInfo{hasNextPage endCursor}}}}}`,
 	} {
 		if !strings.Contains(follow, want) {
@@ -516,6 +580,7 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 		wantNoAnchor            bool
 		wantEmptyAuthor         bool
 		wantNoParents           bool
+		wantNoClosing           bool
 	}{
 		{name: "review author", from: `author{login}`, to: `author{logn}`, wantEmptyReviewAuthor: true},
 		{name: "review state", from: ` state}`, to: ` stat}`, wantEmptyReviewState: true},
@@ -527,6 +592,10 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 			wantEmptyAuthor: true},
 		{name: "head commit parents", from: `parents(first:100)`, to: `parentz(first:100)`,
 			wantNoParents: true},
+		{name: "closing references", from: `closingIssuesReferences(first:100)`, to: `closingIssuez(first:100)`,
+			wantNoClosing: true},
+		{name: "closing issue number", from: `closingIssuesReferences(first:100){nodes{number}`,
+			to: `closingIssuesReferences(first:100){nodes{numb}`, wantNoClosing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := fakeRepo(t, 1)
@@ -588,6 +657,19 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 			if !tc.wantEmptyReviewState && reviews[0].State != "approved" {
 				t.Fatalf("unexpected review state in %s: %+v", tc.name, reviews)
 			}
+			if len(snap.Issues) != 2 {
+				t.Fatalf("open issues lost in %s: %+v", tc.name, snap.Issues)
+			}
+			wantClosedBy := 1
+			if tc.wantNoClosing {
+				wantClosedBy = 0
+			}
+			if snap.Issues[0].ClosedBy != wantClosedBy {
+				t.Fatalf("dropped %q was hidden by the fake: issue=%+v", tc.from, snap.Issues[0])
+			}
+			if snap.Issues[1].ClosedBy != 0 {
+				t.Fatalf("unreferenced issue gained a closing reference: %+v", snap.Issues[1])
+			}
 			var head *repo.Commit
 			for i := range snap.Commits {
 				if snap.Commits[i].Branch == "flow-1" {
@@ -612,10 +694,11 @@ func TestPullDetailFieldTypoIsVisibleLocally(t *testing.T) {
 	}
 }
 
-// A PR with 103 reviews and six head parents reads both pages in order, joins
-// them into complete lists and stays inside the documented request plan.
+// A PR with 103 reviews, six head parents and two closing references reads both
+// pages of each connection in order, joins them into complete lists and stays
+// inside the documented request plan.
 func TestBuildSnapshotPaginatesPullDetails(t *testing.T) {
-	for _, mode := range []string{"ok", "follow-error", "third-page"} {
+	for _, mode := range []string{"ok", "follow-error", "third-page", "closing-third-page"} {
 		t.Run(mode, func(t *testing.T) {
 			var calls, graphqlCalls int
 			server := httptest.NewServer(paginatedDetails(t, &calls, &graphqlCalls, mode))
@@ -628,7 +711,10 @@ func TestBuildSnapshotPaginatesPullDetails(t *testing.T) {
 				if err == nil {
 					t.Fatal("accepted a failed follow-up page")
 				}
-				if !snap.Now.IsZero() || len(snap.Commits)+len(snap.PullRequests) != 0 {
+				if mode == "closing-third-page" && !strings.Contains(err.Error(), "closing issue references exceed") {
+					t.Fatalf("third closing-reference page was not rejected: %v", err)
+				}
+				if !snap.Now.IsZero() || len(snap.Commits)+len(snap.Issues)+len(snap.PullRequests) != 0 {
 					t.Fatal("partial snapshot returned")
 				}
 				return
@@ -650,6 +736,9 @@ func TestBuildSnapshotPaginatesPullDetails(t *testing.T) {
 			}
 			if len(head.Parents) != 6 || head.Parents[0] != sha(2000) || head.Parents[5] != sha(2005) {
 				t.Fatalf("parents not complete: %+v", head.Parents)
+			}
+			if len(snap.Issues) != 2 || snap.Issues[0].ClosedBy != 1 || snap.Issues[1].ClosedBy != 1 {
+				t.Fatalf("closing references not joined across pages: %+v", snap.Issues)
 			}
 			if graphqlCalls != 2 {
 				t.Fatalf("GraphQL requests=%d, want 2 detail pages", graphqlCalls)
@@ -699,6 +788,8 @@ func TestBuildSnapshotForkPullsKeepIdentity(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"name":"main"}]`))
 		case strings.HasSuffix(r.URL.Path, "/commits"):
 			_, _ = fmt.Fprintf(w, `[{"sha":"%s","commit":{"author":{"name":"robin","date":"2026-01-01T00:00:00Z"}}}]`, sha(1))
+		case strings.HasSuffix(r.URL.Path, "/issues"):
+			_, _ = w.Write([]byte(`[]`))
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			_, _ = fmt.Fprintf(w, `[
 				{"number":1,"state":"open","head":{"ref":"main","label":"alice:main","repo":{"full_name":"alice/widgets"}},"base":{"ref":"main"}},
@@ -767,5 +858,77 @@ func TestBuildSnapshotSkipsDraftReleases(t *testing.T) {
 	}
 	if len(snap.Releases) != 1 || snap.Releases[0].Tag != "v1" {
 		t.Fatalf("releases=%+v, want only the published v1", snap.Releases)
+	}
+}
+
+// GitHub serves pull requests from the issues endpoint and numbers both from
+// one sequence. Only a closingIssuesReferences node may name a pull request as
+// an issue's closer: neither a PR-shaped list item, a closed issue, an issue
+// number near a PR number, nor a reference to a number that is not an open
+// issue may become a link.
+func TestBuildSnapshotReadsOpenIssuesAndRealClosingReferences(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/acme/widgets":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		case strings.HasSuffix(r.URL.Path, "/branches"):
+			_, _ = w.Write([]byte(`[{"name":"main"}]`))
+		case strings.HasSuffix(r.URL.Path, "/commits"):
+			_, _ = fmt.Fprintf(w, `[{"sha":"%s","commit":{"author":{"name":"robin","date":"2026-01-01T00:00:00Z"}}}]`, sha(1))
+		case strings.HasSuffix(r.URL.Path, "/issues"):
+			if r.URL.Query().Get("state") != "open" {
+				t.Errorf("lost issue filter: %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`[
+				{"number":101,"title":"feed me","state":"open"},
+				{"number":102,"title":"quiet","state":"open"},
+				{"number":103,"title":"done","state":"closed"},
+				{"number":104,"title":"a pull request","state":"open","pull_request":{"url":"https://api.github.com/repos/acme/widgets/pulls/104"}}
+			]`))
+		case strings.HasSuffix(r.URL.Path, "/pulls"):
+			_, _ = w.Write([]byte(`[{"number":7,"state":"open","head":{"ref":"flow-7"},"base":{"ref":"main"}}]`))
+		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
+			_, _ = w.Write([]byte(`{"total_count":0,"workflow_runs":[]}`))
+		case strings.HasSuffix(r.URL.Path, "/releases"), strings.HasSuffix(r.URL.Path, "/deployments"):
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/graphql":
+			body, _ := io.ReadAll(r.Body)
+			query := string(body)
+			if !strings.Contains(query, "closingIssuesReferences(first:100){nodes{number}") {
+				t.Errorf("query did not select closing references: %s", query)
+			}
+			_, _ = w.Write([]byte(`{"data":{"repository":{"p0":{
+				"number":7,
+				"reviews":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}},
+				"closingIssuesReferences":{"nodes":[{"number":101},{"number":7},{"number":999},null],"pageInfo":{"hasNextPage":false,"endCursor":""}},
+				"headRef":{"target":{"oid":"` + sha(1007) + `","committedDate":"2026-01-03T00:00:00Z","author":{"name":"robin"},
+					"parents":{"nodes":[{"oid":"` + sha(1) + `"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}
+			}}}}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	snap, err := c.BuildSnapshot(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Issues) != 2 {
+		t.Fatalf("issues=%+v, want only the two open non-PR items", snap.Issues)
+	}
+	if snap.Issues[0].Number != 101 || snap.Issues[0].Title != "feed me" || snap.Issues[0].State != "open" || snap.Issues[0].ClosedBy != 7 {
+		t.Fatalf("feeding issue not recorded from its closing reference: %+v", snap.Issues[0])
+	}
+	if snap.Issues[1].Number != 102 || snap.Issues[1].ClosedBy != 0 {
+		t.Fatalf("unlinked issue gained a link: %+v", snap.Issues[1])
+	}
+	if calls > opts.plannedRequests() || calls > opts.MaxRequests {
+		t.Fatalf("requests=%d over plan %d or budget %d", calls, opts.plannedRequests(), opts.MaxRequests)
 	}
 }

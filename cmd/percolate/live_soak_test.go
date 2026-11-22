@@ -96,6 +96,8 @@ func (s *watchServer) serve(w http.ResponseWriter, r *http.Request) {
 		body = `[{"name":"main"},{"name":"flow-1"}]`
 	case "/repos/acme/widgets/commits":
 		body = s.commits
+	case "/repos/acme/widgets/issues":
+		body = `[]`
 	case "/repos/acme/widgets/pulls":
 		body = `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`
 	case "/repos/acme/widgets/actions/runs":

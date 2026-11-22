@@ -287,6 +287,13 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			fmt.Fprint(w, fmt.Sprintf(`[{"sha":"%s","parents":[],"commit":{"author":{"name":"robin","date":"2026-01-01T00:00:00Z"}}},`+
 				`{"sha":"%s","parents":[{"sha":"%s"}],"commit":{"author":{"name":"robin","date":"2026-01-02T00:00:00Z"}}}]`,
 				sha(2), sha(3), sha(2)))
+		case "/repos/acme/widgets/issues":
+			// The issues endpoint also returns PRs; only open non-PR items
+			// may become springs. Issue 5 has a real closing reference below.
+			fmt.Fprint(w, `[{"number":5,"title":"feed","state":"open"},`+
+				`{"number":6,"title":"quiet","state":"open"},`+
+				`{"number":7,"title":"a pull request","state":"open",`+
+				`"pull_request":{"url":"https://api.github.com/repos/acme/widgets/pulls/7"}}]`)
 		case "/repos/acme/widgets/pulls":
 			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)
 		case "/repos/acme/widgets/actions/runs":
@@ -324,11 +331,16 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			if strings.Contains(query, "target{oid") || strings.Contains(query, "Commit{oid") {
 				oidField = fmt.Sprintf(`"oid":"%s",`, sha(4))
 			}
+			closingField := ""
+			if strings.Contains(query, "closingIssuesReferences(first:100)") {
+				closingField = `"closingIssuesReferences":{"nodes":[{"number":5}],"pageInfo":{"hasNextPage":false,"endCursor":""}},`
+			}
 			fmt.Fprintf(w, `{"data":{"repository":{"p0":{"number":1,"headRefOid":"%s","headRefName":"flow-1","baseRefName":"main",`+
 				`"reviews":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}},`+
+				`%s`+
 				`"headRef":{"target":{%s"committedDate":"2026-01-04T00:00:00Z","author":{"name":"robin"},`+
 				`"parents":{"nodes":[%s],"pageInfo":{"hasNextPage":%t,"endCursor":"next"}}}}}}}}`,
-				sha(4), strings.Join(reviews, ","), more, oidField, strings.Join(parents, ","), more)
+				sha(4), strings.Join(reviews, ","), more, closingField, oidField, strings.Join(parents, ","), more)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -387,10 +399,16 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
 		t.Fatalf("unexpected objects: %+v", snap)
 	}
-	// 227 is the documented worst-case plan for default options. This short
+	// The open issues travel through the same record→replay path: the PR-shaped
+	// list item is excluded and only issue 5 has a recorded closing reference.
+	if len(snap.Issues) != 2 || snap.Issues[0].Number != 5 || snap.Issues[0].ClosedBy != 1 ||
+		snap.Issues[1].Number != 6 || snap.Issues[1].ClosedBy != 0 {
+		t.Fatalf("issues or closing references lost in recording: %+v", snap.Issues)
+	}
+	// 238 is the documented worst-case plan for default options. This short
 	// read costs one page per list plus two detail pages for the one batch.
-	if calls > 227 || calls >= 250 {
-		t.Fatalf("record→replay used %d requests, over the 227-request plan and 250-request budget", calls)
+	if calls > 238 || calls >= 250 {
+		t.Fatalf("record→replay used %d requests, over the 238-request plan and 250-request budget", calls)
 	}
 }
 
@@ -869,7 +887,8 @@ func TestWatchLiveGraphQLErrorIsSafeOnStderr(t *testing.T) {
 		case "/repos/acme/widgets/actions/runs":
 			fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
 		case "/repos/acme/widgets/commits",
-			"/repos/acme/widgets/releases", "/repos/acme/widgets/deployments":
+			"/repos/acme/widgets/issues", "/repos/acme/widgets/releases",
+			"/repos/acme/widgets/deployments":
 			fmt.Fprint(w, `[]`)
 		case "/repos/acme/widgets/pulls":
 			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)
