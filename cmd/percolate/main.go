@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // fallbackVersion is what a plain local build reports. Releases override it
@@ -269,6 +270,12 @@ func reorderArgs(args []string, fs *flag.FlagSet) []string {
 // watch fetches a live snapshot for owner/repo and returns a Fetcher that can
 // repeat the same bounded read on the poll interval. When a path is given, the
 // first snapshot is recorded as exact JSON so any later view can replay it.
+//
+// The first read happens before the window exists, so a rate-limited launch is
+// not an exit: while a refusal's recorded reset is still ahead, watch waits for
+// that instant and reads again, and only a snapshot actually read is recorded
+// or returned. A refusal without a usable reset, and every other first-read
+// error, return to main unchanged for today's one-line exit.
 func watch(ctx context.Context, recordPath string, args []string) (repo.Snapshot, live.Fetcher, error) {
 	if len(args) != 1 {
 		return repo.Snapshot{}, nil, usageError{errors.New("repository must be owner/repo, for example percolate brew0x/percolate")}
@@ -290,8 +297,27 @@ func watch(ctx context.Context, recordPath string, args []string) (repo.Snapshot
 		return client.BuildSnapshot(ctx, opts)
 	}
 	snapshot, err := fetch(ctx)
-	if err != nil {
-		return repo.Snapshot{}, nil, err
+	for err != nil {
+		// A window meant to be left running must start on its own, so a first
+		// read refused with a recorded reset still ahead waits out GitHub's
+		// read budget instead of exiting before the TUI exists. The wait is
+		// the instant the transport recorded, never a guess, and it is
+		// computed from the same now as the decision so it cannot fall
+		// short of the reset. There is no ordinary pre-window retry, so
+		// every other first-read error, including a refusal whose reset is
+		// missing or already past, falls through to today's one-line exit.
+		now := time.Now()
+		if !live.ResetTimeOf(err).After(now) {
+			return repo.Snapshot{}, nil, err
+		}
+		timer := time.NewTimer(live.RetryDelay(err, now, 0))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return repo.Snapshot{}, nil, ctx.Err()
+		case <-timer.C:
+		}
+		snapshot, err = fetch(ctx)
 	}
 	if recordPath != "" {
 		data, err := json.MarshalIndent(snapshot, "", "  ")

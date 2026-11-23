@@ -923,7 +923,12 @@ func TestRecordedPullDetailsCoversBothPublicConnections(t *testing.T) {
 func TestWatchLiveFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", "9999999999")
+		// A reset the transport can accept is now waited out before the
+		// window opens (the launch case is driven in rate_limit_test.go), so
+		// this refusal records one too absurd to act on: past the transport's
+		// saturation guard, it is not a usable deadline, and the read keeps
+		// today's one-line exit.
+		w.Header().Set("X-RateLimit-Reset", "99999999999999")
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer server.Close()
