@@ -298,7 +298,9 @@ func TestGeneratedFixture(t *testing.T) {
 // A compact frame puts a pull request's number-label row on the lane names.
 // A branch name is recorded data too: the number must not paint a hybrid that
 // names no object. Taller frames still label the flow, and the compact frame
-// keeps the diamond and its details.
+// keeps the diamond and its details. The busy snapshot answers for the
+// many-flow case the issue reported in its second golden: every visible lane
+// there carries a pull request, so each of those numbers lands on a name.
 func TestCompactFrameKeepsLaneNames(t *testing.T) {
 	s := scene.Build(fixture(t, "small"))
 	compact := scene.Frame(s, 0, 60, 7)
@@ -317,6 +319,22 @@ func TestCompactFrameKeepsLaneNames(t *testing.T) {
 	tall := scene.Frame(s, 0, 60, 20)
 	if !strings.Contains(tall.String(), "#1") {
 		t.Fatal("a frame with room lost the PR number label")
+	}
+	// The busy fixture is the other 60x7 golden the issue named. Its four
+	// visible lanes each carry a pull request, so all four numbers would land
+	// on branch names at once; they yield together and the flows stay drawn.
+	busy := scene.Frame(scene.Build(fixture(t, "busy")), 0, 60, 7)
+	names = strings.Split(busy.String(), "\n")[2]
+	for _, name := range []string{"main", "flow-01", "flow-02", "flow-03"} {
+		if !strings.Contains(names, name) {
+			t.Fatalf("compact busy frame lost the lane name %q: %q", name, names)
+		}
+	}
+	if strings.Contains(names, "#") {
+		t.Fatalf("compact busy frame painted a PR number over a lane name: %q", names)
+	}
+	if !strings.ContainsRune(busy.String(), '◇') {
+		t.Fatal("compact busy frame lost every visible PR diamond")
 	}
 }
 
