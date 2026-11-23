@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/brew0x/percolate/internal/live"
+	"github.com/brew0x/percolate/internal/repo"
 	"github.com/brew0x/percolate/internal/scene"
 )
 
@@ -151,5 +156,147 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	if waits[1] != live.Interval {
 		t.Fatalf("successful refresh resumed a %s cadence, want the ordinary %s interval",
 			waits[1].Round(time.Millisecond), live.Interval)
+	}
+}
+
+// The paused-until-reset behaviour of the running window cannot protect the
+// first read: it happens before the TUI exists, and a rate-limited launch used
+// to print one line and exit, leaving a window meant to be left running
+// unstarted until someone relaunched it by hand. This drives the whole CLI
+// against the local GitHub fake, whose first answer is a 403 with reset
+// headers a few seconds out. Render mode keeps the exact read path a live
+// launch takes while skipping the TUI, which a test cannot open honestly; the
+// window itself is checked afterwards from the model run builds.
+func TestWatchWaitsForFirstReadRateLimitReset(t *testing.T) {
+	srv := newWatchServer(t)
+	defer srv.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("PERCOLATE_GITHUB_URL", srv.URL())
+	record := filepath.Join(t.TempDir(), "recorded.json")
+
+	// X-RateLimit-Reset is a Unix second. Three seconds leaves room for the
+	// not-exited check below whatever the sub-second phase of the clock is.
+	reset := time.Now().Add(3 * time.Second).Unix()
+	wantReset := time.Unix(reset, 0).UTC()
+	srv.limitNext(reset)
+
+	var out, errOut bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"render", "acme/widgets", "--record", record,
+			"--frame", "0", "--size", "60x20", "--color=false"}, &out, &errOut)
+	}()
+
+	// While the budget is still exhausted the program stays alive...
+	select {
+	case code := <-done:
+		t.Fatalf("the program exited %d before the recorded reset: %s", code, errOut.String())
+	case <-time.After(400 * time.Millisecond):
+	}
+	// ...and neither reads again nor records anything it did not read.
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("a refused first read recorded a snapshot: %v", err)
+	}
+	before := srv.requestCount()
+	if before != 1 {
+		t.Fatalf("%d requests before the reset, want only the refused meta read", before)
+	}
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d after the reset: %s", code, errOut.String())
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("the program did not finish after the recorded reset")
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("a waited-out refusal still wrote to stderr: %q", errOut.String())
+	}
+	// Every request of the retry lands at or after the recorded reset. The
+	// grace only absorbs microscopic clock slew between the timer's clock and
+	// the wall clock the fake records; it is far shorter than any scheduling
+	// shortcut, exactly as in the paused-window test above.
+	const grace = 100 * time.Millisecond
+	for _, at := range srv.requestTimes()[before:] {
+		if at.Before(wantReset.Add(-grace)) {
+			t.Fatalf("read issued at %s, before the recorded reset %s",
+				at.UTC().Format(time.RFC3339Nano), wantReset.Format(time.RFC3339Nano))
+		}
+	}
+
+	// Only a snapshot actually read may be recorded, and it is the ordinary
+	// state the fake serves, not a refusal-shaped stub.
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.Commits) != 2 || len(snap.PullRequests) != 1 ||
+		len(snap.Runs) != 1 || snap.Runs[0].Status != "in_progress" {
+		t.Fatalf("recording is not the state the fake serves: %+v", snap)
+	}
+
+	// The window that opens is the ordinary one. The frame drawn after the
+	// wait is exactly the replay of the snapshot that was read, and a model
+	// built the way run builds it carries no trace of the refusal that was
+	// waited out: no failed-refresh reason, no pause, the read repository.
+	var replay bytes.Buffer
+	if code := run([]string{"render", "--fixture", record, "--frame", "0",
+		"--size", "60x20", "--color=false"}, &replay, &errOut); code != 0 {
+		t.Fatalf("replay exit %d: %s", code, errOut.String())
+	}
+	if replay.String() != out.String() || strings.Contains(out.String(), "\x1b") {
+		t.Fatal("the frame after the reset is not the ordinary frame of the read snapshot")
+	}
+	s := scene.Build(snap)
+	m := model{s: s, width: 100, height: 30, prev: snap, cur: snap,
+		web: browserBase(), slug: "acme/widgets"}
+	if len(s.Marks) > 0 {
+		m.selectedID = s.Marks[0].ID
+	}
+	key := strings.Join(m.footer(), "\n")
+	for _, trace := range []string{"refresh failed", "paused", "retrying"} {
+		if strings.Contains(key, trace) {
+			t.Fatalf("the first window's footer carried %q from the waited-out refusal: %q", trace, key)
+		}
+	}
+	if !strings.Contains(m.View().Content, "●") {
+		t.Fatal("the first window did not draw the read repository")
+	}
+}
+
+// A plain first-read error is not a pause: today's one line, exit 1, and
+// nothing recorded, because no snapshot was read. Only a refusal whose reset
+// the transport recorded still ahead is worth waiting out.
+func TestWatchFirstReadPlainErrorExitsAsBefore(t *testing.T) {
+	srv := newWatchServer(t)
+	defer srv.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("PERCOLATE_GITHUB_URL", srv.URL())
+	srv.failNext()
+	record := filepath.Join(t.TempDir(), "unwritten.json")
+
+	var out, errOut bytes.Buffer
+	code := run([]string{"render", "acme/widgets", "--record", record,
+		"--frame", "0", "--size", "60x20", "--color=false"}, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	message := strings.TrimSuffix(errOut.String(), "\n")
+	if !strings.Contains(message, "HTTP 500") || strings.Contains(message, "\n") {
+		t.Fatalf("not a one-line first-read failure: %q", message)
+	}
+	if strings.Contains(message, "test-token") {
+		t.Fatalf("first-read failure leaked the token: %q", message)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("a failed first read wrote to stdout: %q", out.String())
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("a failed first read recorded a snapshot: %v", err)
 	}
 }
