@@ -47,22 +47,27 @@ in errors.
 
 `Client.BuildSnapshot(ctx, SnapshotOptions)` assembles a `repo.Snapshot`
 from bounded REST lists (repository meta, branches, default-branch commits,
-open issues, open pull requests, workflow runs, releases, deployments) and
-batched aliased GraphQL queries that fill per-PR reviews, closing issue
-references and head-commit anchors (25 PRs per query), plus one bounded page
-per recent run that fills `repo.WorkflowRun.Jobs`. Defaults bound one read
-to recent history: 1000 open issues and pull requests, 5000 default-branch
-commits, 5000 workflow runs and 1000 branches, releases and deployments each,
-and the job lists of the 10 most recent runs, at most 100 jobs each. The
-worst-case plan is 248 requests `plannedRequests()` (1 meta, 157 list pages,
+open issues, open pull requests, workflow runs, releases with their asset
+names, deployments) and batched aliased GraphQL queries that fill per-PR
+reviews, closing issue references and head-commit anchors (25 PRs per query),
+plus one bounded page per recent run that fills `repo.WorkflowRun.Jobs` and
+one per recent deployment that fills `repo.Deployment.State`. Defaults bound
+one read to recent history: 1000 open issues and pull requests, 5000
+default-branch commits, 5000 workflow runs and 1000 branches, releases and
+deployments each, the job lists of the 10 most recent runs, at most 100 jobs
+each, and the latest recorded status of the 10 most recent deployments. The
+worst-case plan is 258 requests `plannedRequests()` (1 meta, 157 list pages,
 80 detail queries: a first page plus one follow-up for each of the 40
-batches, and 10 job pages), under the 250-request budget and the 300-request
-budget promised for #3; short collections cost fewer (the 500-item local fake
-measures 65). A plan that exceeds its budget is rejected before any request.
-Every list read enforces its item cap as well as its page count, so a repository
-with more items than a cap fails with one line instead of truncating its
-history. Any failure returns no snapshot, and a PR that disappears between the
-list and its detail query keeps its lane but gains no reviews.
+batches, 10 job pages and 10 deployment-status pages), inside the
+300-request budget promised for #3; short collections cost fewer (the
+500-item local fake measures 75). A plan that exceeds its budget is rejected
+before any request. Every list read enforces its item cap as well as its
+page count, so a repository with more items than a cap fails with one line
+instead of truncating its history. A failure of any of those reads returns
+no snapshot — the one deliberate exception is the per-deployment status page
+described below, whose failure leaves a colour unrecorded rather than
+costing the snapshot. A PR that disappears between the list and its detail
+query keeps its lane but gains no reviews.
 
 The job read is bounded the same way, with an explicit per-run and total cap.
 `GET /actions/runs/{id}/jobs` is read once per run for the `MaxRunsWithJobs`
@@ -110,16 +115,35 @@ callers with push access are filtered before the cap check: a draft was never
 published, so it must not draw a release mark or enter release details, and it
 must not consume the release budget.
 
-Not read in this slice: release artifact names and per-deployment statuses
-(both unbounded per-object fan-outs; deployment state stays empty rather than
-guessed). Artifacts and deployment state are recorded only when a snapshot was
-made by a source that included them; a release with none says
-`artifacts not recorded` rather than a numeric zero. Per-run job lists are now
-read for the recent-run window described above; a run outside that window is
-in the same honest position as an unread artifact or state, and says
-`jobs not recorded`. A snapshot that does carry them renders artifacts above
-their release, colours each deployment's flow by its recorded state, and draws
-one mark per job beside its run, naming failing jobs in run details.
+Release artifacts and deployment states are read live now, both bounded. A
+release's asset names arrive on the release list page itself — GitHub carries
+each release's `assets` inline — so they land in `repo.Release.Artifacts` in
+GitHub order without any per-release request, and a draft's assets never
+land, because drafts are filtered before the cap check. A deployment's state
+arrives from `GET /repos/{owner}/{repo}/deployments/{id}/statuses`: one page
+per deployment for the `MaxDeploymentsWithStatuses` (10) most recent
+deployments in the recorded list order, so the window adds at most 10
+requests to any plan. GitHub returns that list newest first (confirmed
+against live public REST data), so the first item is the latest recorded
+status and no second page is ever needed; GitHub also serves states beyond
+the documented enum (a live `waiting` was observed), and the snapshot records
+such a word as-is, where the model keeps unknown states neutral. A status
+read that fails, a body that is not a status list, or an empty list leaves
+`repo.Deployment.State` empty — nothing is guessed — and the read moves on
+to the next deployment instead of failing the snapshot: the deployment
+itself was already recorded completely, and its state is the colour of a
+flow, not the identity of an object. (A refusal caused by an exhausted
+request budget is not hidden for long: the next poll's first request fails
+that read and schedules the recorded pause.) A deployment past the window
+keeps an empty state, which details report as `state: not recorded`; GitHub
+deletes statuses older than 90 days, so an old deployment can honestly
+report no state. Closing the window (0) reproduces the stateless snapshot
+exactly. A snapshot that carries these fields renders artifacts above their
+release and colours each deployment's flow by its recorded state, exactly as
+hand-written fixtures already did; a source that omits them keeps the honest
+`artifacts not recorded` and `state: not recorded` positions. Per-run job
+lists stay as described above: a run read within the window records its list
+even when empty, and a run outside it says `jobs not recorded`.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
 local servers; also the seam for GitHub Enterprise hosts). It must be

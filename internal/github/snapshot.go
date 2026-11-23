@@ -41,6 +41,12 @@ const (
 	runJobsWindowDefault = 10
 )
 
+// deploymentStatusWindowDefault bounds the per-deployment status reads. Each
+// of the most recent deployments costs exactly one request: GitHub returns a
+// deployment's statuses newest first, so the latest recorded status is the
+// first item of the first page and no second page is ever needed.
+const deploymentStatusWindowDefault = 10
+
 // SnapshotOptions bounds one live repository read. Exceeding a limit is an
 // error, never a partial snapshot: an incomplete read must not masquerade as
 // repository state. Every list read enforces both its page count and its item
@@ -64,31 +70,40 @@ type SnapshotOptions struct {
 	// 100-item page, because each run's job list is read with a single
 	// request whose total_count either confirms the page or fails the read.
 	MaxJobsPerRun int
+	// MaxDeploymentsWithStatuses bounds how many of the most recent
+	// deployments (in the recorded list order) get their status list read.
+	// A deployment past the window keeps an empty State, so its details
+	// still report no recorded state rather than a guessed colour. Each
+	// read is exactly one request, so the window adds at most this many
+	// requests to any plan; closing it (0) reproduces the stateless
+	// snapshot exactly.
+	MaxDeploymentsWithStatuses int
 }
 
 // DefaultSnapshotOptions bounds one read to recent history: up to 1000 open
 // issues and pull requests, 5000 default-branch commits, 5000 workflow runs and
 // 1000 branches, releases and deployments, plus the job lists of the 10 most
-// recent runs, at most 100 jobs each. These are generous enough for an active
-// repository; a read that still exceeds one is a clear error, never a partial
-// snapshot. The worst case is 248 requests, under the 250-request budget (and
-// the 300-request budget promised for #3); a short collection costs fewer
-// because each list stops at its first short page. The limits hold for
-// owner/repo in README.md.
+// recent runs, at most 100 jobs each, and the latest recorded status of the 10
+// most recent deployments. These are generous enough for an active repository;
+// a read that still exceeds one is a clear error, never a partial snapshot.
+// The worst case is 258 requests, inside the 300-request budget promised for
+// #3; a short collection costs fewer because each list stops at its first
+// short page. The limits hold for owner/repo in README.md.
 func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 	return SnapshotOptions{
-		Owner:           owner,
-		Repo:            name,
-		MaxRequests:     250,
-		MaxBranches:     10 * pageSize,
-		MaxCommits:      50 * pageSize,
-		MaxIssues:       10 * pageSize,
-		MaxPullRequests: 10 * pageSize,
-		MaxRuns:         50 * pageSize,
-		MaxReleases:     10 * pageSize,
-		MaxDeployments:  10 * pageSize,
-		MaxRunsWithJobs: runJobsWindowDefault,
-		MaxJobsPerRun:   runJobsPerRunDefault,
+		Owner:                      owner,
+		Repo:                       name,
+		MaxRequests:                300,
+		MaxBranches:                10 * pageSize,
+		MaxCommits:                 50 * pageSize,
+		MaxIssues:                  10 * pageSize,
+		MaxPullRequests:            10 * pageSize,
+		MaxRuns:                    50 * pageSize,
+		MaxReleases:                10 * pageSize,
+		MaxDeployments:             10 * pageSize,
+		MaxRunsWithJobs:            runJobsWindowDefault,
+		MaxJobsPerRun:              runJobsPerRunDefault,
+		MaxDeploymentsWithStatuses: deploymentStatusWindowDefault,
 	}
 }
 
@@ -99,22 +114,27 @@ func pages(items int) int { return items/pageSize + 1 }
 // plannedRequests is the exact upper bound on requests this configuration can
 // issue: each list read is bounded by pages(item cap) requests, pull-request
 // details never exceed pullDetailPages*ceil(MaxPullRequests/pullDetailBatch)
-// queries (one first page plus at most one follow-up per batch), and the
-// run-job window adds exactly one request per run, because each run's job
-// list must fit one page. BuildSnapshot rejects configurations whose plan
-// exceeds MaxRequests, so a run can never drift past its budget mid-read.
+// queries (one first page plus at most one follow-up per batch), the run-job
+// window adds exactly one request per run, because each run's job list must fit
+// one page, and the deployment-status window adds one request per deployment,
+// because the latest status is the first item of the first statuses page.
+// BuildSnapshot rejects configurations whose plan exceeds MaxRequests, so a
+// run can never drift past its budget mid-read.
 func (o SnapshotOptions) plannedRequests() int {
 	batches := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
 	detail := pullDetailPages * batches
 	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxIssues) +
 		pages(o.MaxPullRequests) + pages(o.MaxRuns) + pages(o.MaxReleases) +
-		pages(o.MaxDeployments) + detail + o.MaxRunsWithJobs
+		pages(o.MaxDeployments) + detail + o.MaxRunsWithJobs + o.MaxDeploymentsWithStatuses
 }
 
 // BuildSnapshot assembles repo.Snapshot from REST list reads and batched
-// GraphQL pull-request details. Any failure returns an error and no snapshot.
-// The result is a point-in-time view: objects can change between pages, and
-// list ETags only deduplicate identical repeat reads.
+// GraphQL pull-request details. Any list or detail failure returns an error
+// and no snapshot; the one exception is the per-deployment status read,
+// which leaves a deployment's State empty rather than failing the read, as
+// fetchDeploymentStatuses documents. The result is a point-in-time view:
+// objects can change between pages, and list ETags only deduplicate
+// identical repeat reads.
 func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.Snapshot, error) {
 	if opts.Owner == "" || opts.Repo == "" || strings.Contains(opts.Owner, "/") || strings.Contains(opts.Repo, "/") {
 		return repo.Snapshot{}, errors.New("repository must be owner/repo")
@@ -124,6 +144,9 @@ func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.
 	}
 	if opts.MaxRunsWithJobs < 0 {
 		return repo.Snapshot{}, errors.New("run-job window must not be negative")
+	}
+	if opts.MaxDeploymentsWithStatuses < 0 {
+		return repo.Snapshot{}, errors.New("deployment-status window must not be negative")
 	}
 	// One request per run can only hold a page of jobs, so the per-run cap
 	// must fit a page: a larger cap could not be honoured by the read the
@@ -167,6 +190,7 @@ func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.
 	if err := c.listDeployments(ctx, opts, &snap); err != nil {
 		return repo.Snapshot{}, err
 	}
+	c.fetchDeploymentStatuses(ctx, opts, &snap)
 	if len(snap.PullRequests) > 0 {
 		if err := c.fetchPullDetails(ctx, opts, &snap); err != nil {
 			return repo.Snapshot{}, err
@@ -449,6 +473,9 @@ func (c *Client) listReleases(ctx context.Context, opts SnapshotOptions, snap *r
 		TargetCommitish string     `json:"target_commitish"`
 		PublishedAt     *time.Time `json:"published_at"`
 		Draft           bool       `json:"draft"`
+		Assets          []struct {
+			Name string `json:"name"`
+		} `json:"assets"`
 	}
 	if err := c.listInto(ctx, opts.repoPath("/releases"), pages(opts.MaxReleases), &src); err != nil {
 		return err
@@ -474,7 +501,15 @@ func (c *Client) listReleases(ctx context.Context, opts SnapshotOptions, snap *r
 		if isSHA(r.TargetCommitish) {
 			head = r.TargetCommitish
 		}
-		snap.Releases = append(snap.Releases, repo.Release{Tag: r.TagName, HeadSHA: head, Time: when})
+		// The release list page already carries each release's assets
+		// inline, so their names land in GitHub order without any
+		// per-release request. A draft's assets never land, because drafts
+		// were filtered above.
+		artifacts := make([]repo.Artifact, 0, len(r.Assets))
+		for _, a := range r.Assets {
+			artifacts = append(artifacts, repo.Artifact{Name: a.Name})
+		}
+		snap.Releases = append(snap.Releases, repo.Release{Tag: r.TagName, HeadSHA: head, Time: when, Artifacts: artifacts})
 	}
 	return nil
 }
@@ -492,11 +527,43 @@ func (c *Client) listDeployments(ctx context.Context, opts SnapshotOptions, snap
 		return fmt.Errorf("GitHub deployments exceed the %d-deployment limit", opts.MaxDeployments)
 	}
 	for _, d := range src {
-		// Per-deployment status reads stay out of this slice; state is left
-		// empty rather than guessed from anything but a real status.
 		snap.Deployments = append(snap.Deployments, repo.Deployment{ID: d.ID, HeadSHA: d.SHA, Environment: d.Environment})
 	}
 	return nil
+}
+
+// fetchDeploymentStatuses records the latest status of the most recent
+// deployments, in the order the deployment list was read (GitHub returns
+// newest first). One request per deployment reads the first page of
+// GET /repos/{owner}/{repo}/deployments/{id}/statuses; that list is newest
+// first too, so the first item is the latest recorded status and no second
+// page exists to need. A read that fails, a body that is not a status list,
+// or an empty list leaves that deployment's State empty — never a guess —
+// and the read moves on: the deployment itself was recorded completely by
+// the list, and its state is the colour of a flow, not the identity of an
+// object, so a refused page must not cost the whole snapshot. (A refusal
+// caused by an exhausted request budget is not hidden for long: the next
+// poll's first request fails that read and schedules the recorded pause.) A
+// deployment past the window, or a snapshot with the window closed, keeps
+// an empty State, which details report as `state: not recorded`. The whole
+// fan-out is bounded by MaxDeploymentsWithStatuses and counted in
+// plannedRequests, so it cannot drift past MaxRequests.
+func (c *Client) fetchDeploymentStatuses(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) {
+	reads := min(len(snap.Deployments), opts.MaxDeploymentsWithStatuses)
+	for i := 0; i < reads; i++ {
+		d := &snap.Deployments[i]
+		var statuses []struct {
+			State string `json:"state"`
+		}
+		path := fmt.Sprintf("%s?per_page=%d", opts.repoPath(fmt.Sprintf("/deployments/%d/statuses", d.ID)), pageSize)
+		if err := c.getPage(ctx, path, &statuses); err != nil {
+			continue
+		}
+		if len(statuses) == 0 {
+			continue // No recorded status: an honest empty, never a borrowed state.
+		}
+		d.State = statuses[0].State
+	}
 }
 
 // detailPageInfo is the GraphQL cursor state for a reviews, closing-issue or

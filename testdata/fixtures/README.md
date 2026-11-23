@@ -272,7 +272,7 @@ must be checked the same way:
   that binary assembled with `--record`, including the new per-run job reads.
   The whole read was 20 requests (1 repository meta, 1 branch, 1 commit, 1
   issue, 1 pull, 3 run pages, 10 job pages, 1 release, 1 deployment), inside
-  the 248-request plan.
+  the 248-request plan in force at capture time.
 - **Shape at capture:** one branch (`main`), 53 commits, six open issues
   (#80, #77, #75, #64, #32, #29), zero open pull requests (so the GraphQL
   detail path did not run), 252 workflow runs, zero releases and zero
