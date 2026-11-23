@@ -103,11 +103,16 @@ the 32-frame transition, then holds exactly the new snapshot. Fixtures and
 `render` never animate a change — they draw one snapshot at the requested frame.
 
 A failed live read keeps the last scene and adds `refresh failed: <reason>;
-retrying` to the footer until a successful read clears it. The reason is the
-failed read's own message, flattened to one printable line; no outcome is
-guessed and no new mark is drawn. When that full wording does not fit, the
-prefix and retry note are dropped before the reason is, so an actionable detail
-such as a rate-limit reset time stays readable. Status and key hints share one
+retrying` to the footer until a successful read clears it. A refusal that
+records a GitHub rate-limit reset instead waits for that recorded instant and
+says `paused until reset` only while it waits: the claim ends when the paused
+read starts, so the window never says it is waiting while a request is already
+in flight. The delay is never guessed, and a reset already past
+resumes the ordinary interval. The reason is the failed read's own message,
+flattened to one printable line; no outcome is guessed and no new mark is drawn.
+When that full wording does not fit, the prefix and retry note are dropped
+before the reason is, so an actionable detail such as a rate-limit reset time
+stays readable. Status and key hints share one
 row when they fit; a long status takes its own row above the controls rather
 than pushing them off screen. The hints stay together and lose detail only in a
 narrow terminal, and the browser and quit keys survive whenever there is room

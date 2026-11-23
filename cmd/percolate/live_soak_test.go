@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/scene"
@@ -25,6 +26,10 @@ type watchServer struct {
 	commits     string
 	run         string
 	fail        bool
+	limit       bool
+	reset       int64
+	requests    int
+	servedAt    []time.Time
 	notModified int
 	srv         *httptest.Server
 }
@@ -49,6 +54,28 @@ func newWatchServer(t *testing.T) *watchServer {
 func (s *watchServer) Close()      { s.srv.Close() }
 func (s *watchServer) URL() string { return s.srv.URL }
 
+// limitNext makes the next repository-meta read a rate-limit refusal whose
+// reset time GitHub records in the response headers, then lets reads succeed.
+func (s *watchServer) limitNext(reset int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.limit, s.reset = true, reset
+}
+
+func (s *watchServer) requestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requests
+}
+
+// requestTimes returns the instant every read reached the fake, so a test can
+// prove a scheduled read did not go out before GitHub's recorded reset.
+func (s *watchServer) requestTimes() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.servedAt...)
+}
+
 // change inserts a newer commit and finishes the running run: a real recorded
 // change that must animate once and then settle.
 func (s *watchServer) change() {
@@ -69,6 +96,10 @@ func (s *watchServer) failNext() {
 }
 
 func (s *watchServer) serve(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.requests++
+	s.servedAt = append(s.servedAt, time.Now())
+	s.mu.Unlock()
 	if r.URL.Path == "/graphql" {
 		// The PR's head commit is already on the default branch, so the real
 		// detail query adds no commit; it still runs on every poll.
@@ -82,6 +113,15 @@ func (s *watchServer) serve(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	version, fail := s.version, s.fail
+	if s.limit && r.URL.Path == "/repos/acme/widgets" {
+		reset := s.reset
+		s.limit = false
+		s.mu.Unlock()
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprint(reset))
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	if fail && r.URL.Path == "/repos/acme/widgets" {
 		s.fail = false
 		s.mu.Unlock()
