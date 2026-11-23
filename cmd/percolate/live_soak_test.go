@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/scene"
@@ -28,6 +29,7 @@ type watchServer struct {
 	limit       bool
 	reset       int64
 	requests    int
+	servedAt    []time.Time
 	notModified int
 	srv         *httptest.Server
 }
@@ -66,6 +68,14 @@ func (s *watchServer) requestCount() int {
 	return s.requests
 }
 
+// requestTimes returns the instant every read reached the fake, so a test can
+// prove a scheduled read did not go out before GitHub's recorded reset.
+func (s *watchServer) requestTimes() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.servedAt...)
+}
+
 // change inserts a newer commit and finishes the running run: a real recorded
 // change that must animate once and then settle.
 func (s *watchServer) change() {
@@ -88,6 +98,7 @@ func (s *watchServer) failNext() {
 func (s *watchServer) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.requests++
+	s.servedAt = append(s.servedAt, time.Now())
 	s.mu.Unlock()
 	if r.URL.Path == "/graphql" {
 		// The PR's head commit is already on the default branch, so the real

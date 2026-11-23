@@ -160,46 +160,50 @@ func responseError(resp *http.Response, kind string, now time.Time) error {
 			}
 			return errors.New("GitHub rate limit exhausted")
 		}
-		if wait, ok := retryAfterWait(resp.Header.Get("Retry-After"), now); ok {
-			return &RateLimitError{ResetAt: now.Add(wait).UTC(),
-				message: fmt.Sprintf("GitHub rate limited; retry after %s", wait)}
+		if reset, ok := retryAfterAt(resp.Header.Get("Retry-After"), now); ok {
+			// Scheduling waits for the recorded instant, which retryAfterAt
+			// floors at now; only the reported wait is rounded, so a reset
+			// inside the current second still holds to the recorded moment.
+			return &RateLimitError{ResetAt: reset.UTC(),
+				message: fmt.Sprintf("GitHub rate limited; retry after %s", reset.Sub(now).Round(time.Second))}
 		}
 	}
 	return fmt.Errorf("GitHub %s returned HTTP %d", kind, resp.StatusCode)
 }
 
-// retryAfterWait parses a Retry-After header in either form GitHub sends:
-// delta-seconds or an HTTP date (used by secondary rate limits). The wait is
-// rounded to a second and floored at zero, so a date already past never yields
-// a negative duration. Missing, malformed or absurd values are not actionable.
-func retryAfterWait(header string, now time.Time) (time.Duration, bool) {
+// retryAfterAt parses a Retry-After header in either form GitHub sends:
+// delta-seconds or an HTTP date (used by secondary rate limits). It returns
+// the instant a retry may resume: the parsed date itself, never a rounded
+// wait, so a date whose second boundary falls inside the current one is
+// honored to the recorded moment. An instant already past is floored at now,
+// so it never yields a negative wait. Missing, malformed or absurd values
+// are not actionable.
+func retryAfterAt(header string, now time.Time) (time.Time, bool) {
 	const maxSeconds = int64(1<<63-1) / int64(time.Second)
-	const maxWait = time.Duration(maxSeconds) * time.Second
 	header = strings.TrimSpace(header)
 	if header == "" {
-		return 0, false
+		return time.Time{}, false
 	}
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
 		if seconds < 0 || seconds > maxSeconds {
-			return 0, false
+			return time.Time{}, false
 		}
-		return time.Duration(seconds) * time.Second, true
+		return now.Add(time.Duration(seconds) * time.Second), true
 	}
 	date, err := http.ParseTime(header)
 	if err != nil {
-		return 0, false
+		return time.Time{}, false
 	}
-	wait := date.Sub(now).Round(time.Second)
-	if wait < 0 {
-		wait = 0
+	if date.Before(now) {
+		return now, true
 	}
 	// time.Sub saturates at the largest duration, so an HTTP date beyond
-	// ~292 years would otherwise print a nonsense wait instead of the bare
-	// HTTP error used for every other unactionable value.
-	if wait > maxWait {
-		return 0, false
+	// ~292 years would otherwise schedule a nonsense instant instead of the
+	// bare HTTP error used for every other unactionable value.
+	if date.Sub(now) > time.Duration(maxSeconds)*time.Second {
+		return time.Time{}, false
 	}
-	return wait, true
+	return date, true
 }
 
 // ListPage returns JSON from a relative REST path, including its query. Repeat

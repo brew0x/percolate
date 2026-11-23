@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/brew0x/percolate/internal/live"
 	"github.com/brew0x/percolate/internal/scene"
 )
@@ -58,8 +60,8 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	// Run it for real: it must stay pending, and the fake must stay untouched,
 	// until the recorded reset has passed.
 	before := srv.requestCount()
-	fired := make(chan struct{})
-	go func() { retry(); close(fired) }()
+	fired := make(chan tea.Msg, 1)
+	go func() { fired <- retry() }()
 	select {
 	case <-fired:
 		t.Fatal("retry fired before the recorded reset")
@@ -68,15 +70,34 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	if got := srv.requestCount(); got != before {
 		t.Fatalf("%d extra fetches before the reset", got-before)
 	}
+	var poll tea.Msg
 	select {
-	case <-fired:
+	case poll = <-fired:
 	case <-time.After(4 * time.Second):
 		t.Fatal("retry did not fire after the reset")
 	}
+	if _, ok := poll.(pollMsg); !ok {
+		t.Fatalf("retry delivered %T, want a poll message", poll)
+	}
 
-	success, ok := m.fetchCmd()().(snapshotMsg)
+	// Driving the delivered poll through Update issues the read, exactly as
+	// the running program would. Every request must land at or after the
+	// recorded reset: a retry that fires early still reaches the fake here,
+	// so a fire after a few hundred milliseconds cannot slip through. The
+	// grace only absorbs microscopic clock slew between the timer's clock
+	// and the wall clock; it is far shorter than any scheduling shortcut.
+	updated, cmd := m.Update(poll)
+	m = updated.(model)
+	success, ok := cmd().(snapshotMsg)
 	if !ok || success.err != nil {
 		t.Fatalf("fetch after the reset failed: %v", success.err)
+	}
+	const grace = 100 * time.Millisecond
+	for _, at := range srv.requestTimes()[before:] {
+		if at.Before(wantReset.Add(-grace)) {
+			t.Fatalf("read issued at %s, before the recorded reset %s",
+				at.UTC().Format(time.RFC3339Nano), wantReset.Format(time.RFC3339Nano))
+		}
 	}
 	updated, next := m.Update(success)
 	m = updated.(model)

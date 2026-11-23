@@ -245,37 +245,46 @@ func TestPageIsolationAndRedirect(t *testing.T) {
 }
 
 // Both the parser and the error line are checked against a fixed clock, so
-// rounding and the past-date floor are exact regardless of when CI runs.
-func TestRetryAfterWait(t *testing.T) {
+// flooring, the parsed date and the display rounding are exact regardless of
+// when CI runs.
+func TestRetryAfterAt(t *testing.T) {
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
 	for _, tt := range []struct {
 		name, header string
 		now          time.Time
-		want         time.Duration
+		want         time.Time
 		wantOK       bool
 	}{
-		{"seconds", "120", now, 2 * time.Minute, true},
-		{"future HTTP date", now.Add(2 * time.Minute).UTC().Format(http.TimeFormat), now, 2 * time.Minute, true},
-		{"past HTTP date", now.Add(-90 * time.Second).UTC().Format(http.TimeFormat), now, 0, true},
-		{"rounds to a second", now.Add(2 * time.Second).UTC().Format(http.TimeFormat), now.Add(400 * time.Millisecond), 2 * time.Second, true},
-		{"negative seconds", "-5", now, 0, false},
-		{"absurd seconds", "999999999999999999999", now, 0, false},
-		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", now, 0, false},
-		{"invalid", "tomorrow", now, 0, false},
-		{"empty", "", now, 0, false},
+		{"seconds", "120", now, now.Add(2 * time.Minute), true},
+		{"zero seconds", "0", now, now, true},
+		{"future HTTP date", now.Add(2 * time.Minute).UTC().Format(http.TimeFormat), now, now.Add(2 * time.Minute), true},
+		{"past HTTP date", now.Add(-90 * time.Second).UTC().Format(http.TimeFormat), now, now, true},
+		// A date at 12:00:02 arriving at 12:00:00.600 must keep 12:00:02:
+		// rounding the wait for display once moved the reset 400 ms early,
+		// to 12:00:01.600, before GitHub permits the retry.
+		{"date inside the current second",
+			time.Date(2026, time.November, 20, 12, 0, 2, 0, time.UTC).Format(http.TimeFormat),
+			now.Add(600 * time.Millisecond),
+			time.Date(2026, time.November, 20, 12, 0, 2, 0, time.UTC), true},
+		{"negative seconds", "-5", now, time.Time{}, false},
+		{"absurd seconds", "999999999999999999999", now, time.Time{}, false},
+		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", now, time.Time{}, false},
+		{"invalid", "tomorrow", now, time.Time{}, false},
+		{"empty", "", now, time.Time{}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := retryAfterWait(tt.header, tt.now)
-			if ok != tt.wantOK || got != tt.want {
-				t.Fatalf("retryAfterWait(%q) = %s, %t; want %s, %t", tt.header, got, ok, tt.want, tt.wantOK)
+			got, ok := retryAfterAt(tt.header, tt.now)
+			if ok != tt.wantOK || !got.Equal(tt.want) {
+				t.Fatalf("retryAfterAt(%q) = %s, %t; want %s, %t", tt.header, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
 }
 
 // A refused read carries the reset GitHub recorded, so refresh scheduling can
-// wait for that instant instead of guessing a delay. Retry-After is recorded
-// as an absolute time too, relative to the caller-supplied now.
+// wait for that instant instead of guessing a delay. Retry-After is resolved
+// against the caller-supplied now: seconds by adding them, an HTTP date by
+// keeping the parsed date exactly.
 func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
 	reset := now.Add(2 * time.Minute)
@@ -285,6 +294,7 @@ func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 	}{
 		{"core limit", "0", strconv.FormatInt(reset.Unix(), 10), "", reset},
 		{"secondary limit", "412", "", "120", now.Add(2 * time.Minute)},
+		{"secondary limit date", "412", "", now.Add(2 * time.Minute).Format(http.TimeFormat), now.Add(2 * time.Minute)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			header := make(http.Header)
@@ -314,16 +324,21 @@ func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 func TestRateLimitResponseError(t *testing.T) {
 	const prefix = "GitHub rate limited; retry after "
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	later := now.Add(600 * time.Millisecond)
 	for _, tt := range []struct {
 		name, header, want string
 		status             int
+		now                time.Time
 	}{
-		{"seconds", "120", prefix + "2m0s", 429},
-		{"future HTTP date", now.Add(2 * time.Minute).Format(http.TimeFormat), prefix + "2m0s", 429},
-		{"past HTTP date", now.Add(-time.Hour).Format(http.TimeFormat), prefix + "0s", 403},
-		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", "GitHub REST returned HTTP 429", 429},
-		{"malformed", "tomorrow", "GitHub REST returned HTTP 429", 429},
-		{"missing", "", "GitHub REST returned HTTP 403", 403},
+		{"seconds", "120", prefix + "2m0s", 429, now},
+		{"future HTTP date", now.Add(2 * time.Minute).Format(http.TimeFormat), prefix + "2m0s", 429, now},
+		// Only the reported wait is rounded: the reset keeps 12:00:02 and the
+		// 1.4s wait reports as 1s without moving the reset itself.
+		{"sub-second HTTP date", now.Add(2 * time.Second).Format(http.TimeFormat), prefix + "1s", 429, later},
+		{"past HTTP date", now.Add(-time.Hour).Format(http.TimeFormat), prefix + "0s", 403, now},
+		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", "GitHub REST returned HTTP 429", 429, now},
+		{"malformed", "tomorrow", "GitHub REST returned HTTP 429", 429, now},
+		{"missing", "", "GitHub REST returned HTTP 403", 403, now},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			resp := &http.Response{
@@ -334,7 +349,7 @@ func TestRateLimitResponseError(t *testing.T) {
 				},
 				Body: io.NopCloser(strings.NewReader("secret body for test-token")),
 			}
-			got := responseError(resp, "REST", now).Error()
+			got := responseError(resp, "REST", tt.now).Error()
 			if got != tt.want {
 				t.Fatalf("error %q, want %q", got, tt.want)
 			}
