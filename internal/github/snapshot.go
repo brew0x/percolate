@@ -501,14 +501,16 @@ func (c *Client) listReleases(ctx context.Context, opts SnapshotOptions, snap *r
 		if isSHA(r.TargetCommitish) {
 			head = r.TargetCommitish
 		}
-		// The release list page already carries each release's assets
-		// inline, so their names land in GitHub order without any
-		// per-release request. A draft's assets never land, because drafts
-		// were filtered above. A published release's asset list is recorded
-		// even when it is empty — a release that published no assets is an
-		// honest `0 artifacts`, never `artifacts not recorded` — while an
-		// item whose page omits the field entirely was not read and keeps
-		// a nil list.
+		// The release list page already carries each release's complete
+		// asset list inline — GitHub documents no cap on it, and public
+		// reads cross-checked the names against the per-release assets
+		// endpoint up to 168 assets — so the names land in GitHub order
+		// without any per-release request. A draft's assets never land,
+		// because drafts were filtered above. A published release's asset
+		// list is recorded even when it is empty — a release that
+		// published no assets is an honest `0 artifacts`, never
+		// `artifacts not recorded` — while an item whose page omits the
+		// field entirely was not read and keeps a nil list.
 		var artifacts []repo.Artifact
 		if r.Assets != nil {
 			artifacts = make([]repo.Artifact, 0, len(r.Assets))

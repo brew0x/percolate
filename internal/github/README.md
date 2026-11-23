@@ -120,10 +120,17 @@ release's asset names arrive on the release list page itself — GitHub carries
 each release's `assets` inline — so they land in `repo.Release.Artifacts` in
 GitHub order without any per-release request, and a draft's assets never
 land, because drafts are filtered before the cap check. The inline list is
-the complete one, not a truncated prefix (confirmed against live public REST
-data: releases carrying 38 and 55 assets each held every asset inline,
-identical in name and order to their per-release assets endpoints), so there
-is no per-release asset fetch to bound. The list is recorded
+the complete one, not a truncated prefix. GitHub documents that array as
+required with no cap and no truncation note, and live public REST reads
+confirm it (2026-11-23): releases carrying 38, 55 and 168 assets each held
+every asset inline, identical in name and order to their per-release assets
+endpoints — the 168-asset ones are SagerNet/sing-box's v1.15.0-alpha.13 and
+v1.14.4, more assets than the 100-item page that endpoint serves, the exact
+shape that would expose an inline cap — so there is no per-release asset
+fetch to bound. If GitHub ever truncates that inline array, the read must
+stop calling it complete and add the bounded per-release assets endpoint to
+the request plan; these cross-checks are how such a change would be caught.
+The list is recorded
 even when a release published no assets: details then count an honest
 `0 artifacts`, never `artifacts not recorded`, while an item that omits the
 field entirely was not read and keeps a nil list — the same nil-versus-empty

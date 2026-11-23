@@ -1149,16 +1149,18 @@ func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 }
 
 // The inline asset list is the complete one, not a truncated prefix: GitHub
-// documents no cap on the release object's `assets` array, and live public REST
-// reads confirm it — releases carrying 38 and 55 assets each held every asset
-// inline, identical in name and order to their per-release assets endpoints.
-// The decode must therefore record every name of a long inline list, in
-// GitHub order, and 55 mirrors the larger release that was observed.
+// documents the release object's `assets` array with no cap, and live public
+// REST reads confirm it — releases carrying 38, 55 and 168 assets each held
+// every asset inline, identical in name and order to their per-release
+// assets endpoints (checked 2026-11-23). The decode must therefore record
+// every name of a long inline list, in GitHub order; 168 mirrors the largest
+// release observed live and exceeds the 100-item page that endpoint serves,
+// so the decode proves it hides no page-shaped bound of its own.
 func TestBuildSnapshotRecordsLongInlineReleaseAssets(t *testing.T) {
 	server, _ := fakeRepo(t, 0)
 	defer server.Close()
 	wrapped := server.Config.Handler
-	const assets = 55
+	const assets = 168
 	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/releases") {
 			items := make([]string, 0, assets)
