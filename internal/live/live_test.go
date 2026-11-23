@@ -186,21 +186,36 @@ func TestWatcherSurfacesErrorsAndKeepsPolling(t *testing.T) {
 }
 
 // A rate-limit refusal must not be retried on the ordinary (here 20 ms)
-// cadence. The watcher waits for the reset carried by the error, then resumes
-// normal polling from the next successful read.
+// cadence. The reset window opens when the fake issues the refusal, not when
+// the watcher starts, so a busy runner that spends early milliseconds on setup
+// and error delivery can neither starve a correct watcher nor hide an early
+// retry: the first read after the refusal is compared directly with the
+// deadline recorded in the refusal.
 func TestWatcherWaitsForRecordedReset(t *testing.T) {
 	first := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
 	next := repo.Snapshot{Branches: []repo.Branch{{Name: "topic"}}}
-	reset := time.Now().Add(90 * time.Millisecond)
+	const window = 90 * time.Millisecond
 	boom := errors.New("GitHub rate limit exhausted")
 	var calls atomic.Int32
+	// The refusal and the first read after it both happen in the watcher's
+	// goroutine, so refusedAt is written and read sequentially there; waited
+	// is atomic because this test reads it.
+	var refusedAt time.Time
+	var waited atomic.Int64
 	fetch := func(context.Context) (repo.Snapshot, error) {
-		switch calls.Add(1) {
+		switch n := calls.Add(1); n {
 		case 1:
 			return first, nil
 		case 2:
-			return repo.Snapshot{}, resetError{boom, reset}
+			// The deadline is recorded here, when the refusal is issued.
+			refusedAt = time.Now()
+			return repo.Snapshot{}, resetError{boom, refusedAt.Add(window)}
 		default:
+			// Only the first read after the refusal is the evidence; reads
+			// after it run on the ordinary cadence and must not overwrite it.
+			if n == 3 {
+				waited.Store(int64(time.Since(refusedAt)))
+			}
 			return next, nil
 		}
 	}
@@ -219,19 +234,13 @@ func TestWatcherWaitsForRecordedReset(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("rate-limit error was not surfaced")
 	}
-	select {
-	case snap := <-snaps:
-		t.Fatalf("fetched before the recorded reset: %+v", snap)
-	case err := <-errs:
-		t.Fatalf("fetched again before the recorded reset: %v", err)
-	case <-time.After(30 * time.Millisecond):
-	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("%d fetches before the reset, want 2", got)
-	}
 	got := recvSnaps(t, snaps, 1)
 	if !Equal(got[0], next) {
 		t.Fatalf("snapshot after the reset was not the next read: %+v", got[0])
+	}
+	if gap := (time.Duration(waited.Load())).Round(time.Millisecond); gap < window {
+		t.Fatalf("read issued %s after the refusal, before the recorded reset %s after it",
+			gap, window)
 	}
 	cancel()
 	<-done

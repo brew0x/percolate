@@ -30,13 +30,18 @@ returns only the data member; any server-side error rejects the whole call, so
 partial results cannot be mistaken for complete data. Every REST and GraphQL
 request is counted by `Client.Requests()`.
 
-Rate-limit responses (403/429 with `X-RateLimit-Remaining: 0` or a `Retry-After`
+Rate-limit responses (403/429 with `X-RateLimit-Remaining: 0`, or a `Retry-After`
 given in seconds or as an HTTP date) produce one line that says when to come
-back, rounded to a second for display only; a date already past reports zero.
-They also return a `*RateLimitError` whose `ResetTime()` is the recorded instant
-(seconds resolved against the caller's now, an HTTP date kept exactly as
-parsed), so refresh scheduling waits for recorded data rather than a guess.
-Missing, malformed or absurd retry values keep the bare HTTP error.
+back, rounded to a second for display only; a deadline already past reports
+zero. They also return a `*RateLimitError` whose `ResetTime()` is the latest
+valid deadline the headers record — reset seconds resolved against the
+caller's now, an HTTP date kept exactly as parsed — so when both headers are
+usable the later one wins and neither can cut the wait short, and a missing or
+malformed reset cannot discard a usable `Retry-After`. Refresh scheduling waits
+for that recorded data rather than a guess. Missing, malformed or absurd values
+keep the bare HTTP error, including a reset timestamp so far ahead it would
+saturate a duration (the same sanity check as an absurd `Retry-After` date); an
+exhausted budget with no usable deadline keeps the ordinary retry.
 Server error text is flattened to a single line; bodies and tokens never appear
 in errors.
 

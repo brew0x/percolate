@@ -128,11 +128,12 @@ func (c *Client) Requests() int {
 	return c.requests
 }
 
-// RateLimitError is a refused read whose response recorded when GitHub's read
-// budget resets. ResetAt is that recorded instant in UTC, never a guess and
-// never response text; message is the one safe line built by responseError.
-// Refresh schedulers use ResetTime to wait for the recorded reset, and the CLI
-// uses it to say that a read is paused rather than ordinarily retrying.
+// RateLimitError is a refused read whose response recorded when GitHub will
+// admit the next read. ResetAt is the latest deadline its rate headers name,
+// in UTC, never a guess and never response text; message is the one safe line
+// built by responseError. Refresh schedulers use ResetTime to wait for that
+// recorded deadline, and the CLI uses it to say that a read is paused rather
+// than ordinarily retrying.
 type RateLimitError struct {
 	ResetAt time.Time
 	message string
@@ -149,13 +150,21 @@ func (e *RateLimitError) ResetTime() time.Time { return e.ResetAt }
 func responseError(resp *http.Response, kind string, now time.Time) error {
 	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
 		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
-			if reset, err := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
-				resetAt := time.Unix(reset, 0).UTC()
-				wait := resetAt.Sub(now).Round(time.Second)
+			// The primary read budget is exhausted. Its recorded reset is the
+			// deadline GitHub stands behind, and a Retry-After naming a later
+			// instant extends it: scheduling keeps the latest valid deadline,
+			// so a shorter reset never fires early and a missing or malformed
+			// one cannot discard a usable Retry-After.
+			deadline, ok := rateLimitResetAt(resp.Header.Get("X-RateLimit-Reset"), now)
+			if after, hasAfter := retryAfterAt(resp.Header.Get("Retry-After"), now); hasAfter && (!ok || after.After(deadline)) {
+				deadline, ok = after, true
+			}
+			if ok {
+				wait := deadline.Sub(now).Round(time.Second)
 				if wait < 0 {
 					wait = 0
 				}
-				return &RateLimitError{ResetAt: resetAt,
+				return &RateLimitError{ResetAt: deadline.UTC(),
 					message: fmt.Sprintf("GitHub rate limit exhausted; resets in %s", wait)}
 			}
 			return errors.New("GitHub rate limit exhausted")
@@ -171,6 +180,29 @@ func responseError(resp *http.Response, kind string, now time.Time) error {
 	return fmt.Errorf("GitHub %s returned HTTP %d", kind, resp.StatusCode)
 }
 
+// maxWaitSeconds is the largest whole number of seconds a time.Duration can
+// hold. GitHub never records a reset that far ahead; a deadline past it would
+// saturate time.Sub and schedule a pause of roughly 292 years, so it is as
+// unactionable as an absurd Retry-After date.
+const maxWaitSeconds = int64(1<<63-1) / int64(time.Second)
+
+// rateLimitResetAt parses X-RateLimit-Reset, the Unix second GitHub records
+// for the primary budget's refill. A past instant is still a recorded
+// deadline, merely one already due; a timestamp so far ahead that time.Sub
+// would saturate is not, by the same sanity check the HTTP-date Retry-After
+// path applies.
+func rateLimitResetAt(header string, now time.Time) (time.Time, bool) {
+	seconds, err := strconv.ParseInt(strings.TrimSpace(header), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	resetAt := time.Unix(seconds, 0).UTC()
+	if resetAt.Sub(now) > time.Duration(maxWaitSeconds)*time.Second {
+		return time.Time{}, false
+	}
+	return resetAt, true
+}
+
 // retryAfterAt parses a Retry-After header in either form GitHub sends:
 // delta-seconds or an HTTP date (used by secondary rate limits). It returns
 // the instant a retry may resume: the parsed date itself, never a rounded
@@ -179,13 +211,12 @@ func responseError(resp *http.Response, kind string, now time.Time) error {
 // so it never yields a negative wait. Missing, malformed or absurd values
 // are not actionable.
 func retryAfterAt(header string, now time.Time) (time.Time, bool) {
-	const maxSeconds = int64(1<<63-1) / int64(time.Second)
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return time.Time{}, false
 	}
 	if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
-		if seconds < 0 || seconds > maxSeconds {
+		if seconds < 0 || seconds > maxWaitSeconds {
 			return time.Time{}, false
 		}
 		return now.Add(time.Duration(seconds) * time.Second), true
@@ -200,7 +231,7 @@ func retryAfterAt(header string, now time.Time) (time.Time, bool) {
 	// time.Sub saturates at the largest duration, so an HTTP date beyond
 	// ~292 years would otherwise schedule a nonsense instant instead of the
 	// bare HTTP error used for every other unactionable value.
-	if date.Sub(now) > time.Duration(maxSeconds)*time.Second {
+	if date.Sub(now) > time.Duration(maxWaitSeconds)*time.Second {
 		return time.Time{}, false
 	}
 	return date, true

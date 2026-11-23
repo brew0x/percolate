@@ -282,17 +282,30 @@ func TestRetryAfterAt(t *testing.T) {
 }
 
 // A refused read carries the reset GitHub recorded, so refresh scheduling can
-// wait for that instant instead of guessing a delay. Retry-After is resolved
-// against the caller-supplied now: seconds by adding them, an HTTP date by
-// keeping the parsed date exactly.
+// wait for that instant instead of guessing a delay. Both headers are resolved
+// against the caller-supplied now; when both name a deadline, the later one
+// wins. A Retry-After never cuts a recorded reset short, and a missing,
+// malformed or absurd reset cannot discard a usable Retry-After. Zero want
+// marks the responses that record no deadline at all.
 func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
 	reset := now.Add(2 * time.Minute)
+	absurdReset := strconv.FormatInt(time.Date(9999, time.January, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)
 	for _, tt := range []struct {
 		name, remaining, reset, retryAfter string
 		want                               time.Time
 	}{
 		{"core limit", "0", strconv.FormatInt(reset.Unix(), 10), "", reset},
+		{"core reset later than retry-after", "0", strconv.FormatInt(reset.Unix(), 10), "30", reset},
+		{"retry-after later than core reset", "0", strconv.FormatInt(now.Add(30*time.Second).Unix(), 10), "120", now.Add(2 * time.Minute)},
+		{"core reset missing", "0", "", "120", now.Add(2 * time.Minute)},
+		{"core reset malformed", "0", "tomorrow", "120", now.Add(2 * time.Minute)},
+		// A reset past the largest representable wait would saturate the
+		// scheduling duration, a pause of roughly 292 years; it is unactionable
+		// on its own and never hides a usable Retry-After.
+		{"core reset absurd", "0", absurdReset, "", time.Time{}},
+		{"core reset absurd, retry-after usable", "0", absurdReset, "120", now.Add(2 * time.Minute)},
+		{"past core reset, later retry-after", "0", strconv.FormatInt(now.Add(-time.Minute).Unix(), 10), "120", now.Add(2 * time.Minute)},
 		{"secondary limit", "412", "", "120", now.Add(2 * time.Minute)},
 		{"secondary limit date", "412", "", now.Add(2 * time.Minute).Format(http.TimeFormat), now.Add(2 * time.Minute)},
 	} {
@@ -308,11 +321,15 @@ func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 			}
 			err := responseError(resp, "REST", now)
 			var limited *RateLimitError
-			if !errors.As(err, &limited) {
+			if errors.As(err, &limited) {
+				if tt.want.IsZero() {
+					t.Fatalf("unusable headers carried a reset: %s", limited.ResetTime())
+				}
+				if got := limited.ResetTime(); !got.Equal(tt.want) {
+					t.Fatalf("reset time %s, want %s", got, tt.want)
+				}
+			} else if !tt.want.IsZero() {
 				t.Fatalf("error %v carries no reset time", err)
-			}
-			if got := limited.ResetTime(); !got.Equal(tt.want) {
-				t.Fatalf("reset time %s, want %s", got, tt.want)
 			}
 			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "test-token") {
 				t.Fatalf("body or token leaked into error: %q", err)
@@ -323,31 +340,45 @@ func TestRateLimitErrorCarriesResetTime(t *testing.T) {
 
 func TestRateLimitResponseError(t *testing.T) {
 	const prefix = "GitHub rate limited; retry after "
+	const exhausted = "GitHub rate limit exhausted; resets in "
 	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
 	later := now.Add(600 * time.Millisecond)
 	for _, tt := range []struct {
 		name, header, want string
 		status             int
 		now                time.Time
+		remaining, reset   string
 	}{
-		{"seconds", "120", prefix + "2m0s", 429, now},
-		{"future HTTP date", now.Add(2 * time.Minute).Format(http.TimeFormat), prefix + "2m0s", 429, now},
+		{"seconds", "120", prefix + "2m0s", 429, now, "412", ""},
+		{"future HTTP date", now.Add(2 * time.Minute).Format(http.TimeFormat), prefix + "2m0s", 429, now, "412", ""},
 		// Only the reported wait is rounded: the reset keeps 12:00:02 and the
 		// 1.4s wait reports as 1s without moving the reset itself.
-		{"sub-second HTTP date", now.Add(2 * time.Second).Format(http.TimeFormat), prefix + "1s", 429, later},
-		{"past HTTP date", now.Add(-time.Hour).Format(http.TimeFormat), prefix + "0s", 403, now},
-		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", "GitHub REST returned HTTP 429", 429, now},
-		{"malformed", "tomorrow", "GitHub REST returned HTTP 429", 429, now},
-		{"missing", "", "GitHub REST returned HTTP 403", 403, now},
+		{"sub-second HTTP date", now.Add(2 * time.Second).Format(http.TimeFormat), prefix + "1s", 429, later, "412", ""},
+		{"past HTTP date", now.Add(-time.Hour).Format(http.TimeFormat), prefix + "0s", 403, now, "412", ""},
+		{"absurd HTTP date", "Fri, 01 Jan 9999 00:00:00 GMT", "GitHub REST returned HTTP 429", 429, now, "412", ""},
+		{"malformed", "tomorrow", "GitHub REST returned HTTP 429", 429, now, "412", ""},
+		{"missing", "", "GitHub REST returned HTTP 403", 403, now, "412", ""},
+		// An exhausted budget reports its effective wait: a Retry-After naming
+		// a later instant extends the pause, and one naming an earlier
+		// instant cannot cut the recorded reset short.
+		{"retry-after extends the reset", "120", exhausted + "2m0s", 403, now, "0", strconv.FormatInt(now.Add(30*time.Second).Unix(), 10)},
+		{"retry-after cannot shorten the reset", "10", exhausted + "30s", 403, now, "0", strconv.FormatInt(now.Add(30*time.Second).Unix(), 10)},
+		{"exhausted without a usable deadline", "", "GitHub rate limit exhausted", 403, now, "0", "tomorrow"},
+		{"absurd reset without a usable deadline", "", "GitHub rate limit exhausted", 403, now, "0",
+			strconv.FormatInt(time.Date(9999, time.January, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set stores each key in the canonical form Header.Get looks up;
+			// a raw map literal would spell "Ratelimit" differently and
+			// silently never match.
+			header := make(http.Header)
+			header.Set("Retry-After", tt.header)
+			header.Set("X-RateLimit-Remaining", tt.remaining)
+			header.Set("X-RateLimit-Reset", tt.reset)
 			resp := &http.Response{
 				StatusCode: tt.status,
-				Header: http.Header{
-					"Retry-After":           {tt.header},
-					"X-RateLimit-Remaining": {"412"}, // secondary limit, not the primary one
-				},
-				Body: io.NopCloser(strings.NewReader("secret body for test-token")),
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader("secret body for test-token")),
 			}
 			got := responseError(resp, "REST", tt.now).Error()
 			if got != tt.want {
@@ -355,6 +386,32 @@ func TestRateLimitResponseError(t *testing.T) {
 			}
 			if strings.Contains(got, "secret") || strings.Contains(got, "test-token") {
 				t.Fatalf("body or token leaked into error: %q", got)
+			}
+		})
+	}
+}
+
+// The reset header is a bare Unix second with no alternate form, so its own
+// sanity check is what needs pinning: a timestamp beyond the largest
+// representable wait is unactionable, exactly like an absurd Retry-After
+// date, while past timestamps stay recorded deadlines that are simply due.
+func TestRateLimitResetAt(t *testing.T) {
+	now := time.Date(2026, time.November, 20, 12, 0, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, header string
+		want         time.Time
+		wantOK       bool
+	}{
+		{"unix seconds", strconv.FormatInt(now.Add(2*time.Minute).Unix(), 10), now.Add(2 * time.Minute), true},
+		{"past reset", strconv.FormatInt(now.Add(-time.Minute).Unix(), 10), now.Add(-time.Minute), true},
+		{"missing", "", time.Time{}, false},
+		{"malformed", "tomorrow", time.Time{}, false},
+		{"absurd reset", strconv.FormatInt(time.Date(9999, time.January, 1, 0, 0, 0, 0, time.UTC).Unix(), 10), time.Time{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := rateLimitResetAt(tt.header, now)
+			if ok != tt.wantOK || !got.Equal(tt.want) {
+				t.Fatalf("rateLimitResetAt(%q) = %s, %t; want %s, %t", tt.header, got, ok, tt.want, tt.wantOK)
 			}
 		})
 	}
