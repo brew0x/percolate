@@ -1083,8 +1083,11 @@ func TestBuildSnapshotSkipsDraftReleases(t *testing.T) {
 // A published release's asset names land in repo.Release.Artifacts in the
 // order GitHub lists them, straight off the release list page: the list
 // carries each release's assets inline, so no per-release request exists to
-// bound. A draft's assets never land, and the draft is still filtered before
-// the cap check, so it consumes no release budget.
+// bound. A release that published no assets records that emptiness
+// explicitly — an honest `0 artifacts` in details, never `artifacts not
+// recorded` — while an item that omits the assets field entirely was not
+// read and keeps a nil list. A draft's assets never land, and the draft is
+// still filtered before the cap check, so it consumes no release budget.
 func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 	server, _ := fakeRepo(t, 1)
 	defer server.Close()
@@ -1100,9 +1103,12 @@ func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 					{"id":761188796,"name":"percolate_1.0_windows_arm64.zip","state":"uploaded","size":13650151},
 					{"id":761188502,"name":"checksums.txt","state":"uploaded","size":1971}
 				 ]},
-				{"tag_name":"v2-draft","target_commitish":"%s","published_at":null,"draft":true,
+				{"tag_name":"v2-empty","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false,
+				 "assets":[]},
+				{"tag_name":"v3-missing","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false},
+				{"tag_name":"v4-draft","target_commitish":"%s","published_at":null,"draft":true,
 				 "assets":[{"name":"secret-draft.bin","state":"uploaded"}]}
-			]`, sha(1), sha(2))
+			]`, sha(1), sha(2), sha(3), sha(4))
 			return
 		}
 		wrapped.ServeHTTP(w, r)
@@ -1110,13 +1116,19 @@ func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 	c, _ := NewClient("test-token")
 	c.baseURL = server.URL
 	opts := DefaultSnapshotOptions("acme", "widgets")
-	opts.MaxReleases = 1 // the published release plus a draft fits only if drafts are filtered first
+	opts.MaxReleases = 3 // three published releases plus a draft fit only if drafts are filtered first
 	snap, err := c.BuildSnapshot(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.Releases) != 1 || snap.Releases[0].Tag != "v1" {
-		t.Fatalf("releases=%+v, want only the published v1", snap.Releases)
+	wantTags := []string{"v1", "v2-empty", "v3-missing"}
+	if len(snap.Releases) != len(wantTags) {
+		t.Fatalf("releases=%+v, want the three published %v", snap.Releases, wantTags)
+	}
+	for i, tag := range wantTags {
+		if snap.Releases[i].Tag != tag {
+			t.Fatalf("releases=%+v, want the three published %v", snap.Releases, wantTags)
+		}
 	}
 	want := []string{"percolate_1.0_linux_amd64.tar.gz", "percolate_1.0_windows_arm64.zip", "checksums.txt"}
 	artifacts := snap.Releases[0].Artifacts
@@ -1127,6 +1139,12 @@ func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 		if artifacts[i].Name != want[i] {
 			t.Fatalf("GitHub's asset order was lost: %+v, want %v", artifacts, want)
 		}
+	}
+	if empty := snap.Releases[1].Artifacts; empty == nil || len(empty) != 0 {
+		t.Fatalf("zero-asset release did not record an explicit empty list: %+v", empty)
+	}
+	if missing := snap.Releases[2].Artifacts; missing != nil {
+		t.Fatalf("item without an assets field recorded a list: %+v", missing)
 	}
 }
 

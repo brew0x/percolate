@@ -1,6 +1,7 @@
 package scene_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -174,16 +175,41 @@ func TestRemovingReleaseLetsDeploymentStay(t *testing.T) {
 	}
 }
 
-// A snapshot that records no artifacts must say so rather than drawing a
-// citation for an empty list, just as an unrecorded job list does.
-func TestReleaseWithoutArtifactsSaysSo(t *testing.T) {
-	s := repo.Snapshot{Releases: []repo.Release{{Tag: "v1", HeadSHA: "abc"}}}
-	m := scene.Build(s).Marks[0]
-	if !strings.Contains(m.Detail, "artifacts not recorded") {
-		t.Fatalf("detail = %q", m.Detail)
+// A release's artifact wording follows its snapshot, the same line the job
+// list draws: a list that was never read says so rather than a numeric zero,
+// a recorded empty list is the honest count `0 artifacts`, and recorded
+// names are listed. Nothing is invented to fill the strip, and the empty
+// list survives a recorded snapshot's JSON as recorded, not unread.
+func TestReleaseArtifactDetails(t *testing.T) {
+	s := repo.Snapshot{Releases: []repo.Release{
+		{Tag: "v1", HeadSHA: "abc"},
+		{Tag: "v2", HeadSHA: "abc", Artifacts: []repo.Artifact{}},
+		{Tag: "v3", HeadSHA: "abc", Artifacts: []repo.Artifact{{Name: "a.bin"}}},
+	}}
+	marks := scene.Build(s).Marks
+	if len(marks) != 3 {
+		t.Fatalf("expected three release marks, got %d", len(marks))
 	}
-	if len(m.Artifacts) != 0 {
-		t.Fatalf("invented artifacts: %+v", m.Artifacts)
+	if !strings.Contains(marks[0].Detail, "artifacts not recorded") || strings.Contains(marks[0].Detail, "0 artifacts") {
+		t.Fatalf("unread artifact list rendered as data: %q", marks[0].Detail)
+	}
+	if !strings.Contains(marks[1].Detail, "0 artifacts") || strings.Contains(marks[1].Detail, "artifacts not recorded") {
+		t.Fatalf("explicitly empty artifact list misread: %q", marks[1].Detail)
+	}
+	if !strings.Contains(marks[2].Detail, "artifacts: a.bin") {
+		t.Fatalf("recorded artifact names lost: %q", marks[2].Detail)
+	}
+	for _, m := range marks[:2] {
+		if len(m.Artifacts) != 0 {
+			t.Fatalf("invented artifacts: %+v", m.Artifacts)
+		}
+	}
+	var replay repo.Snapshot
+	if err := json.Unmarshal([]byte(`{"releases":[{"tag":"v4","head_sha":"abc","artifacts":[]}]}`), &replay); err != nil {
+		t.Fatal(err)
+	}
+	if detail := scene.Build(replay).Marks[0].Detail; !strings.Contains(detail, "0 artifacts") {
+		t.Fatalf("recorded empty asset list lost through JSON: %q", detail)
 	}
 }
 

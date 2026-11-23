@@ -187,6 +187,53 @@ func TestVisualLanguageNamesRecordedJobCount(t *testing.T) {
 	}
 }
 
+// A release's artifact list is a recorded fact, not a decoration: a list that
+// was never read says `artifacts not recorded`, a recorded empty list is the
+// honest zero `0 artifacts`, and recorded names are listed. The scene detail
+// and the panel share one wording, and the visual-language doc names it.
+func TestReleaseArtifactDetailWordings(t *testing.T) {
+	panel := func(artifacts []repo.Artifact) string {
+		release := repo.Release{Tag: "v9", HeadSHA: "abc", Artifacts: artifacts}
+		m := uiModel(repo.Snapshot{Releases: []repo.Release{release}})
+		return panelText(m, markByID(t, m, "release:v9"))
+	}
+	if none := panel(nil); !strings.Contains(none, "artifacts not recorded") || strings.Contains(none, "0 artifacts") {
+		t.Fatalf("unread artifact list reported a count:\n%s", none)
+	}
+	if zero := panel([]repo.Artifact{}); !strings.Contains(zero, "0 artifacts") || strings.Contains(zero, "artifacts not recorded") {
+		t.Fatalf("recorded empty artifact list misread as unread:\n%s", zero)
+	}
+	if names := panel([]repo.Artifact{{Name: "a.bin"}, {Name: "b.bin"}}); !strings.Contains(names, "a.bin, b.bin") {
+		t.Fatalf("recorded artifact names lost:\n%s", names)
+	}
+	// A departing release is read from the scene's recorded detail rather
+	// than a structured field, so the scene must use the panel's wording
+	// too. Sharing one helper keeps the two surfaces from drifting.
+	for _, tt := range []struct {
+		artifacts []repo.Artifact
+		want, bad string
+	}{
+		{nil, "artifacts not recorded", "0 artifacts"},
+		{[]repo.Artifact{}, "0 artifacts", "artifacts not recorded"},
+		{[]repo.Artifact{{Name: "a.bin"}}, "artifacts: a.bin", ""},
+	} {
+		snap := repo.Snapshot{Releases: []repo.Release{{Tag: "v9", HeadSHA: "abc", Artifacts: tt.artifacts}}}
+		got := scene.Build(snap).Marks[0].Detail
+		if !strings.Contains(got, tt.want) || (tt.bad != "" && strings.Contains(got, tt.bad)) {
+			t.Fatalf("scene detail did not use the panel's artifact wording %q (bad %q):\n%s", tt.want, tt.bad, got)
+		}
+	}
+	doc, err := os.ReadFile("../../docs/visual-language.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"`artifacts not recorded`", "`0 artifacts`"} {
+		if !strings.Contains(string(doc), want) {
+			t.Fatalf("visual-language doc does not name the panel's artifact wording %q", want)
+		}
+	}
+}
+
 // A replay has no repository to link to, so the panel says so instead of
 // inventing a URL from a fixture name or a mark label.
 func TestDetailPanelReplayHasNoURL(t *testing.T) {

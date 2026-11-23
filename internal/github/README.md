@@ -119,7 +119,11 @@ Release artifacts and deployment states are read live now, both bounded. A
 release's asset names arrive on the release list page itself — GitHub carries
 each release's `assets` inline — so they land in `repo.Release.Artifacts` in
 GitHub order without any per-release request, and a draft's assets never
-land, because drafts are filtered before the cap check. A deployment's state
+land, because drafts are filtered before the cap check. The list is recorded
+even when a release published no assets: details then count an honest
+`0 artifacts`, never `artifacts not recorded`, while an item that omits the
+field entirely was not read and keeps a nil list — the same nil-versus-empty
+line the job read draws. A deployment's state
 arrives from `GET /repos/{owner}/{repo}/deployments/{id}/statuses`: one page
 per deployment for the `MaxDeploymentsWithStatuses` (10) most recent
 deployments in the recorded list order, so the window adds at most 10
@@ -141,7 +145,9 @@ report no state. Closing the window (0) reproduces the stateless snapshot
 exactly. A snapshot that carries these fields renders artifacts above their
 release and colours each deployment's flow by its recorded state, exactly as
 hand-written fixtures already did; a source that omits them keeps the honest
-`artifacts not recorded` and `state: not recorded` positions. Per-run job
+`artifacts not recorded` and `state: not recorded` positions (a recorded empty
+asset list stays the honest `0 artifacts` through record and replay).
+Per-run job
 lists stay as described above: a run read within the window records its list
 even when empty, and a run outside it says `jobs not recorded`.
 
