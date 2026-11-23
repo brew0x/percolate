@@ -1148,6 +1148,46 @@ func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
 	}
 }
 
+// The inline asset list is the complete one, not a truncated prefix: GitHub
+// documents no cap on the release object's `assets` array, and live public REST
+// reads confirm it — releases carrying 38 and 55 assets each held every asset
+// inline, identical in name and order to their per-release assets endpoints.
+// The decode must therefore record every name of a long inline list, in
+// GitHub order, and 55 mirrors the larger release that was observed.
+func TestBuildSnapshotRecordsLongInlineReleaseAssets(t *testing.T) {
+	server, _ := fakeRepo(t, 0)
+	defer server.Close()
+	wrapped := server.Config.Handler
+	const assets = 55
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			items := make([]string, 0, assets)
+			for i := 0; i < assets; i++ {
+				items = append(items, fmt.Sprintf(`{"name":"percolate_%02d.bin"}`, i))
+			}
+			_, _ = fmt.Fprintf(w, `[{"tag_name":"v1","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false,"assets":[%s]}]`,
+				sha(1), strings.Join(items, ","))
+			return
+		}
+		wrapped.ServeHTTP(w, r)
+	})
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := snap.Releases[0].Artifacts
+	if len(artifacts) != assets {
+		t.Fatalf("artifacts=%d, want the full inline list of %d", len(artifacts), assets)
+	}
+	for i, a := range artifacts {
+		if want := fmt.Sprintf("percolate_%02d.bin", i); a.Name != want {
+			t.Fatalf("asset %d name=%q, want %q: the inline order was lost", i, a.Name, want)
+		}
+	}
+}
+
 // One live read records the latest status of each recent deployment: the
 // statuses list is newest first, so the first item is the latest recorded
 // state, a read that fails or returns nothing leaves the state empty and the
