@@ -105,7 +105,9 @@ the 32-frame transition, then holds exactly the new snapshot. Fixtures and
 A failed live read keeps the last scene and adds `refresh failed: <reason>;
 retrying` to the footer until a successful read clears it. A refusal that
 records a GitHub rate-limit reset instead waits for that recorded instant and
-says `paused until reset`; the delay is never guessed, and a reset already past
+says `paused until reset` only while it waits: the claim ends when the paused
+read starts, so the window never says it is waiting while a request is already
+in flight. The delay is never guessed, and a reset already past
 resumes the ordinary interval. The reason is the failed read's own message,
 flattened to one printable line; no outcome is guessed and no new mark is drawn.
 When that full wording does not fit, the prefix and retry note are dropped

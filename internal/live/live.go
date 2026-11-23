@@ -45,7 +45,9 @@ func ResetTimeOf(err error) time.Time {
 // failure keeps the caller's ordinary interval; a rate-limit refusal waits
 // until its recorded reset. A reset already past keeps the ordinary cadence,
 // so a refreshed budget does not leave the window stuck on a longer pause.
-// Now is supplied by the caller's scheduler, never by rendering.
+// Now is supplied by the caller's scheduler, never by rendering. The TUI
+// schedules one wait at a time with this; Watcher instead keeps a schedule
+// anchored to poll starts, so a slow read cannot stretch its cadence.
 func RetryDelay(err error, now time.Time, ordinary time.Duration) time.Duration {
 	if reset := ResetTimeOf(err); reset.After(now) {
 		return reset.Sub(now)
@@ -78,13 +80,18 @@ type Watcher struct {
 	Fetch    Fetcher
 }
 
-// Run fetches once immediately, then once per Interval, until ctx is done.
-// Every successful snapshot that differs from the previous one is sent on
-// snaps; every failure is sent on errs and polling continues afterward, so a
-// transient GitHub error never freezes the window. A rate-limit refusal waits
-// for the reset time carried by its error instead of polling on Interval.
-// Both channels are closed when Run returns. Run keeps no scene or frame state:
-// callers own the transition between the snapshots they receive.
+// Run fetches once immediately, then starts a read every Interval, until ctx
+// is done. The cadence anchors to poll starts, not to when each read
+// returns, so however long a read or its delivery takes, ordinary polls stay
+// Interval apart instead of stretching by that time, and a fetch that
+// overruns its slot begins the next one immediately. Every successful
+// snapshot that differs from the previous one is sent on snaps; every failure
+// is sent on errs and polling continues afterward, so a transient GitHub
+// error never freezes the window. A rate-limit refusal waits for the reset
+// time carried by its error instead of polling on Interval, and the cadence
+// resumes from that read. Both channels are closed when Run returns. Run
+// keeps no scene or frame state: callers own the transition between the
+// snapshots they receive.
 func (w Watcher) Run(ctx context.Context, snaps chan<- repo.Snapshot, errs chan<- error) error {
 	defer close(snaps)
 	defer close(errs)
@@ -121,18 +128,29 @@ func (w Watcher) Run(ctx context.Context, snaps chan<- repo.Snapshot, errs chan<
 		return nil
 	}
 
+	// next is when the next poll starts. Ordinary reads keep the cadence on
+	// this schedule — anchored to poll starts, not to when the last read
+	// returned — so a slow read or a slow consumer cannot stretch the
+	// interval; a rate-limit refusal whose reset is still ahead moves the
+	// next start to that recorded instant, and one already past leaves the
+	// ordinary schedule alone.
+	next := time.Now().Add(interval)
 	err := fetch()
 	for ctx.Err() == nil {
-		// Schedule from the last outcome: a rate-limit refusal waits for its
-		// recorded reset, every other read keeps the ordinary interval.
-		timer := time.NewTimer(RetryDelay(err, time.Now(), interval))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-			err = fetch()
+		if reset := ResetTimeOf(err); reset.After(time.Now()) {
+			next = reset
 		}
+		if wait := time.Until(next); wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		err = fetch()
+		next = next.Add(interval)
 	}
 	return ctx.Err()
 }

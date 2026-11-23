@@ -29,7 +29,9 @@ change to what was read, so an unchanged poll never starts a transition. A
 rate-limit refusal carries GitHub's recorded reset instant from the transport;
 both the TUI and `Watcher` schedule the next read for that instant instead of
 the ordinary 60-second tick, and return to the ordinary interval after a
-successful read. The wait is computed by the scheduler, never by rendering, and
+successful read. `Watcher` anchors its ordinary ticks to poll starts, so a
+slow read or a slow consumer cannot stretch the interval. The wait is
+computed by the scheduler, never by rendering, and
 is never guessed from a failed poll.
 
 ## Consequences

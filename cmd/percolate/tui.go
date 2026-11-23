@@ -35,14 +35,10 @@ func tick() tea.Cmd {
 	return tea.Tick(125*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// poll schedules the next live read on GitHub's ordinary poll interval.
-func poll() tea.Cmd {
-	return pollAfter(live.Interval)
-}
-
-// pollAfter schedules the next live read after an explicit delay. A refused
-// read hands over the wait derived from GitHub's recorded reset; the timer is
-// created here, on the scheduler side, never in rendering.
+// pollAfter schedules the next live read after an explicit wait: the ordinary
+// interval after a successful read, or the wait a refused read derived from
+// GitHub's recorded reset. The timer is created here, on the scheduler side,
+// never in rendering.
 func pollAfter(delay time.Duration) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg { return pollMsg{} })
 }
@@ -61,9 +57,17 @@ type model struct {
 	// refreshErr is the last failed live read's one-line reason. Empty means
 	// the last read succeeded; there is no separate flag that could disagree.
 	refreshErr string
-	// paused records that the refused read is waiting for GitHub's recorded
-	// reset. It only changes the footer's wording; pollAfter owns the timer.
+	// paused records that the window is waiting out GitHub's recorded reset
+	// before reading again. A refused read sets it; the poll that starts the
+	// next read clears it, so the footer never claims a pause while a
+	// request is already in flight. It only changes the footer's wording;
+	// the scheduler owns the timer.
 	paused bool
+	// schedule builds the command that starts the next live read after a
+	// wait. It is nil in production, meaning pollAfter's real timer; a test
+	// can install a recorder to read the wait a read chose without waiting
+	// it out, so the cadence is verified exactly rather than by clock.
+	schedule func(delay time.Duration) tea.Cmd
 }
 
 // markIndex finds a mark by its recorded identity. A refresh can insert a
@@ -260,9 +264,18 @@ func (m model) footer() []string {
 // reserve is the footer height, bounded by the terminal so the whole view fits.
 func (m model) reserve() int { return len(m.footer()) }
 
+// schedulePoll returns the command that starts the next live read after the
+// given wait, through the model's scheduler when one is installed.
+func (m model) schedulePoll(delay time.Duration) tea.Cmd {
+	if m.schedule == nil {
+		return pollAfter(delay)
+	}
+	return m.schedule(delay)
+}
+
 func (m model) Init() tea.Cmd {
 	if m.fetch != nil {
-		return tea.Batch(tick(), poll())
+		return tea.Batch(tick(), m.schedulePoll(live.Interval))
 	}
 	return tick()
 }
@@ -289,6 +302,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tick()
 	case pollMsg:
+		// The scheduled read is starting, so whatever it was waiting for
+		// has arrived: the footer must not keep claiming a pause while a
+		// request is already in flight.
+		m.paused = false
 		return m, m.fetchCmd()
 	case snapshotMsg:
 		if v.err != nil {
@@ -299,7 +316,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Only a reset still ahead is a pause; an already passed reset
 			// resumes the ordinary cadence and must not claim otherwise.
 			m.paused = live.ResetTimeOf(v.err).After(now)
-			return m, pollAfter(live.RetryDelay(v.err, now, live.Interval))
+			return m, m.schedulePoll(live.RetryDelay(v.err, now, live.Interval))
 		}
 		m.refreshErr = ""
 		m.paused = false
@@ -327,7 +344,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cur = v.snap
 			m.s = scene.Build(v.snap)
 		}
-		return m, poll()
+		return m, m.schedulePoll(live.Interval)
 	case browserMsg:
 		if v.err != nil {
 			m.notice = "could not open browser"

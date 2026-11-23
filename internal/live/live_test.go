@@ -86,6 +86,23 @@ func recvSnaps(t *testing.T, ch <-chan repo.Snapshot, n int) []repo.Snapshot {
 	return got
 }
 
+// recvTimes drains the read-start channel until n poll starts arrive or the
+// deadline passes.
+func recvTimes(t *testing.T, ch <-chan time.Time, n int) []time.Time {
+	t.Helper()
+	var got []time.Time
+	deadline := time.After(2 * time.Second)
+	for len(got) < n {
+		select {
+		case at := <-ch:
+			got = append(got, at)
+		case <-deadline:
+			t.Fatalf("timed out after %d of %d reads", len(got), n)
+		}
+	}
+	return got
+}
+
 func TestWatcherPollsAndSkipsUnchanged(t *testing.T) {
 	s1 := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
 	s2 := repo.Snapshot{Branches: []repo.Branch{{Name: "topic"}}}
@@ -241,6 +258,43 @@ func TestWatcherWaitsForRecordedReset(t *testing.T) {
 	if gap := (time.Duration(waited.Load())).Round(time.Millisecond); gap < window {
 		t.Fatalf("read issued %s after the refusal, before the recorded reset %s after it",
 			gap, window)
+	}
+	cancel()
+	<-done
+}
+
+// A read that outlasts most of the interval must not stretch the cadence:
+// the next poll starts on the ordinary schedule, anchored to poll starts, not
+// a full interval after the slow read returned. Scheduling from each read's
+// return would start it 120 ms late here; starting it early is the other
+// failure, so both ends of the gap are asserted.
+func TestWatcherKeepsCadenceWhenAReadIsSlow(t *testing.T) {
+	snap := repo.Snapshot{Branches: []repo.Branch{{Name: "main"}}}
+	const interval = 200 * time.Millisecond
+	const slow = 120 * time.Millisecond
+	var calls atomic.Int32
+	starts := make(chan time.Time, 16)
+	fetch := func(context.Context) (repo.Snapshot, error) {
+		// Record the instant the read starts, before it spends its time.
+		starts <- time.Now()
+		if calls.Add(1) == 2 {
+			time.Sleep(slow)
+		}
+		return snap, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	snaps, errs := make(chan repo.Snapshot), make(chan error)
+	done := make(chan error, 1)
+	go func() { done <- Watcher{Interval: interval, Fetch: fetch}.Run(ctx, snaps, errs) }()
+
+	recvSnaps(t, snaps, 1) // the immediate first read
+	at := recvTimes(t, starts, 3)
+	gap := at[2].Sub(at[1])
+	const slack = slow / 2
+	if gap < interval-slack || gap > interval+slack {
+		t.Fatalf("slow read stretched the cadence: next poll started %s after the last, want ≈%s",
+			gap.Round(time.Millisecond), interval)
 	}
 	cancel()
 	<-done

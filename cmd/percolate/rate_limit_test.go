@@ -26,7 +26,15 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := model{s: scene.Build(snap), prev: snap, cur: snap, fetch: fetch, width: 100, height: 20}
+	// The recorder keeps every wait the model schedules and still returns the
+	// real timer, so the test proves both the wait it chose and the behaviour
+	// that follows, including the request instants below.
+	var waits []time.Duration
+	record := func(d time.Duration) tea.Cmd {
+		waits = append(waits, d)
+		return pollAfter(d)
+	}
+	m := model{s: scene.Build(snap), prev: snap, cur: snap, fetch: fetch, width: 100, height: 20, schedule: record}
 
 	// X-RateLimit-Reset is a Unix second. Three seconds leaves room for the
 	// no-fetch check below whatever the sub-second phase of the clock is.
@@ -48,6 +56,16 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	m = updated.(model)
 	if retry == nil {
 		t.Fatal("no retry scheduled after the refusal")
+	}
+	// The refusal handed the scheduler a wait that reaches exactly to the
+	// recorded reset. It was chosen before this line ran, so from here it
+	// cannot be any shorter.
+	if len(waits) == 0 {
+		t.Fatal("the refusal scheduled no wait")
+	}
+	if w := waits[len(waits)-1]; w < wantReset.Sub(time.Now()) {
+		t.Fatalf("refused read scheduled a %s wait, short of the recorded reset",
+			w.Round(time.Millisecond))
 	}
 	footer := strings.Join(m.footer(), "\n")
 	for _, want := range []string{"refresh failed:", "resets in", "paused until reset"} {
@@ -81,17 +99,33 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	}
 
 	// Driving the delivered poll through Update issues the read, exactly as
-	// the running program would. Every request must land at or after the
-	// recorded reset: a retry that fires early still reaches the fake here,
-	// so a fire after a few hundred milliseconds cannot slip through. The
-	// grace only absorbs microscopic clock slew between the timer's clock
-	// and the wall clock; it is far shorter than any scheduling shortcut.
-	updated, cmd := m.Update(poll)
+	// the running program would. Starting the read ends the pause, so the
+	// footer is read here, before the fetch returns and while the request is
+	// in flight: it reports the failed read and an ordinary retry, never a
+	// window claiming to wait while a request is already out.
+	updated, read := m.Update(poll)
 	m = updated.(model)
-	success, ok := cmd().(snapshotMsg)
+	if m.paused {
+		t.Fatal("the pause outlived the wait that scheduled the read")
+	}
+	inFlight := strings.Join(m.footer(), "\n")
+	if strings.Contains(inFlight, "paused until reset") {
+		t.Fatalf("footer still claims a pause after the read started: %q", inFlight)
+	}
+	for _, want := range []string{"refresh failed:", "retrying"} {
+		if !strings.Contains(inFlight, want) {
+			t.Fatalf("in-flight footer lost %q: %q", want, inFlight)
+		}
+	}
+	success, ok := read().(snapshotMsg)
 	if !ok || success.err != nil {
 		t.Fatalf("fetch after the reset failed: %v", success.err)
 	}
+	// Every request must land at or after the recorded reset: a retry that
+	// fires early still reaches the fake here, so a fire after a few hundred
+	// milliseconds cannot slip through. The grace only absorbs microscopic
+	// clock slew between the timer's clock and the wall clock; it is far
+	// shorter than any scheduling shortcut.
 	const grace = 100 * time.Millisecond
 	for _, at := range srv.requestTimes()[before:] {
 		if at.Before(wantReset.Add(-grace)) {
@@ -107,13 +141,15 @@ func TestLiveRefreshPausesUntilRateLimitReset(t *testing.T) {
 	if next == nil {
 		t.Fatal("refresh after the reset stopped polling")
 	}
-	// A success after the reset goes back to the minute-long interval: its
-	// command must not fire promptly the way the stale reset wait would.
-	nextFired := make(chan struct{})
-	go func() { next(); close(nextFired) }()
-	select {
-	case <-nextFired:
-		t.Fatal("refresh after the reset did not resume the ordinary interval")
-	case <-time.After(250 * time.Millisecond):
+	// A success after the reset returns to the documented ordinary cadence:
+	// the wait it schedules is read from the model's own scheduler, exactly,
+	// so a regression that polls every few seconds cannot pass the way a
+	// short watch of the clock would let it.
+	if len(waits) != 2 {
+		t.Fatalf("the window scheduled %d waits, want the pause and the resumption", len(waits))
+	}
+	if waits[1] != live.Interval {
+		t.Fatalf("successful refresh resumed a %s cadence, want the ordinary %s interval",
+			waits[1].Round(time.Millisecond), live.Interval)
 	}
 }
