@@ -298,6 +298,12 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			fmt.Fprint(w, `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`)
 		case "/repos/acme/widgets/actions/runs":
 			fmt.Fprint(w, fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"id":5,"head_sha":"%s","status":"in_progress","conclusion":null}]}`, sha(2)))
+		case "/repos/acme/widgets/actions/runs/5/jobs":
+			// A running run's strip holds a finished job beside an
+			// unfinished one, both from the same recorded list.
+			fmt.Fprint(w, `{"total_count":2,"jobs":[`+
+				`{"name":"build","status":"completed","conclusion":"success"},`+
+				`{"name":"watch","status":"in_progress","conclusion":null}]}`)
 		case "/repos/acme/widgets/releases":
 			fmt.Fprint(w, fmt.Sprintf(`[{"tag_name":"v0.1","target_commitish":"%s","published_at":"2026-01-03T00:00:00Z"}]`, sha(2)))
 		case "/repos/acme/widgets/deployments":
@@ -399,16 +405,24 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
 		t.Fatalf("unexpected objects: %+v", snap)
 	}
+	// The one recorded run carries its two-job list through record and replay
+	// alike: a finished job beside the still-running one.
+	jobs := snap.Runs[0].Jobs
+	if len(jobs) != 2 || jobs[0].Name != "build" || jobs[0].Conclusion != "success" ||
+		jobs[1].Name != "watch" || jobs[1].Status != "in_progress" || jobs[1].Conclusion != "" {
+		t.Fatalf("run jobs not recorded: %+v", jobs)
+	}
 	// The open issues travel through the same record→replay path: the PR-shaped
 	// list item is excluded and only issue 5 has a recorded closing reference.
 	if len(snap.Issues) != 2 || snap.Issues[0].Number != 5 || snap.Issues[0].ClosedBy != 1 ||
 		snap.Issues[1].Number != 6 || snap.Issues[1].ClosedBy != 0 {
 		t.Fatalf("issues or closing references lost in recording: %+v", snap.Issues)
 	}
-	// 238 is the documented worst-case plan for default options. This short
-	// read costs one page per list plus two detail pages for the one batch.
-	if calls > 238 || calls >= 250 {
-		t.Fatalf("record→replay used %d requests, over the 238-request plan and 250-request budget", calls)
+	// 248 is the documented worst-case plan for default options. This short
+	// read costs one page per list plus two detail pages for the one batch,
+	// and one page for the one run's job list.
+	if calls > 248 || calls >= 250 {
+		t.Fatalf("record→replay used %d requests, over the 248-request plan and 250-request budget", calls)
 	}
 }
 
@@ -613,6 +627,47 @@ func TestRecordedPublicFixtureReplaysToGolden(t *testing.T) {
 				t.Fatal("replay rendered ANSI sequences with --color=false")
 			}
 		})
+	}
+}
+
+// The jobs recording must keep both real cases the #29 read produces: the
+// recent runs whose job lists GitHub served, with real names and mixed
+// conclusions, and the older runs whose jobs the bounded window never read.
+// The goldens carry the visual proof; this pins the data under them.
+func TestRecordedJobsFixtureCarriesRealJobLists(t *testing.T) {
+	const fixturePath = "../../testdata/fixtures/recorded-jobs.json"
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap repo.Snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		t.Fatalf("recording is not a snapshot: %v", err)
+	}
+	if len(snap.Runs) != 252 {
+		t.Fatalf("recording has %d runs, want the 252 captured", len(snap.Runs))
+	}
+	within, without, mixed := 0, 0, false
+	for i, r := range snap.Runs {
+		if i < 10 {
+			if r.Jobs == nil || len(r.Jobs) == 0 || r.Jobs[0].Name == "" {
+				t.Fatalf("run %d inside the window lost its real job list: %+v", r.ID, r.Jobs)
+			}
+			within++
+			for _, j := range r.Jobs {
+				mixed = mixed || j.Conclusion == "skipped"
+			}
+		} else if r.Jobs != nil {
+			t.Fatalf("run %d past the window recorded a job list: %+v", r.ID, r.Jobs)
+		} else {
+			without++
+		}
+	}
+	if within != 10 || without == 0 {
+		t.Fatalf("job window shape changed: %d runs with jobs, %d without", within, without)
+	}
+	if !mixed {
+		t.Fatal("recording lost the real skipped job beside a success")
 	}
 }
 

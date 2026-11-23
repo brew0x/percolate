@@ -49,18 +49,35 @@ in errors.
 from bounded REST lists (repository meta, branches, default-branch commits,
 open issues, open pull requests, workflow runs, releases, deployments) and
 batched aliased GraphQL queries that fill per-PR reviews, closing issue
-references and head-commit anchors (25 PRs per query). Defaults bound one read
+references and head-commit anchors (25 PRs per query), plus one bounded page
+per recent run that fills `repo.WorkflowRun.Jobs`. Defaults bound one read
 to recent history: 1000 open issues and pull requests, 5000 default-branch
-commits, 5000 workflow runs and 1000 branches, releases and deployments each.
-The worst-case plan is 238 requests `plannedRequests()` (1 meta, 157 list pages
-and 80 detail queries: a first page plus one follow-up for each of the 40
-batches), under the 250-request budget and the 300-request budget promised for
-#3; short collections cost fewer (the 500-item local fake measures 55). A plan
-that exceeds its budget is rejected before any request.
+commits, 5000 workflow runs and 1000 branches, releases and deployments each,
+and the job lists of the 10 most recent runs, at most 100 jobs each. The
+worst-case plan is 248 requests `plannedRequests()` (1 meta, 157 list pages,
+80 detail queries: a first page plus one follow-up for each of the 40
+batches, and 10 job pages), under the 250-request budget and the 300-request
+budget promised for #3; short collections cost fewer (the 500-item local fake
+measures 65). A plan that exceeds its budget is rejected before any request.
 Every list read enforces its item cap as well as its page count, so a repository
 with more items than a cap fails with one line instead of truncating its
 history. Any failure returns no snapshot, and a PR that disappears between the
 list and its detail query keeps its lane but gains no reviews.
+
+The job read is bounded the same way, with an explicit per-run and total cap.
+`GET /actions/runs/{id}/jobs` is read once per run for the `MaxRunsWithJobs`
+(10) most recent runs in the recorded list order, with `MaxJobsPerRun` (100)
+as the per-run cap; each read is exactly one request, so the window adds at
+most 10 requests to any plan. The response's own `total_count` is the
+completeness witness: a run with more jobs than the cap, a page short of the
+count it names, or a full page with no matching count is one clear error and
+no snapshot, never a partial job strip presented as complete. A run read
+inside the window records its list even when empty — `0 jobs` is an honest
+statement there — while a run past the window keeps a nil `Jobs` slice, so
+details keep saying `jobs not recorded` rather than a fabricated zero. Closing
+the window (`MaxRunsWithJobs` 0) reproduces the pre-job read exactly; setting
+it above the run count reads every run's jobs and still stays inside the
+plan.
 
 Each PR detail reads the whole review history, closing issue references and
 the head commit's parent list through GraphQL connections in 100-item pages,
@@ -93,15 +110,16 @@ callers with push access are filtered before the cap check: a draft was never
 published, so it must not draw a release mark or enter release details, and it
 must not consume the release budget.
 
-Not read in this slice: release artifact names, per-run job lists and
-per-deployment statuses (the latter two are unbounded per-object fan-outs;
-run details and deployment state stay empty rather than guessed). Artifacts,
-jobs and deployment state are recorded only when a snapshot was made by a
-source that included them; a release with none says `artifacts not recorded`
-and a run with none says `jobs not recorded` rather than a numeric zero. A
-snapshot that does carry them renders artifacts above their release and one
-mark per job beside its run, colours each deployment's flow by its recorded
-state, and names failing jobs in run details.
+Not read in this slice: release artifact names and per-deployment statuses
+(both unbounded per-object fan-outs; deployment state stays empty rather than
+guessed). Artifacts and deployment state are recorded only when a snapshot was
+made by a source that included them; a release with none says
+`artifacts not recorded` rather than a numeric zero. Per-run job lists are now
+read for the recent-run window described above; a run outside that window is
+in the same honest position as an unread artifact or state, and says
+`jobs not recorded`. A snapshot that does carry them renders artifacts above
+their release, colours each deployment's flow by its recorded state, and draws
+one mark per job beside its run, naming failing jobs in run details.
 
 `PERCOLATE_GITHUB_URL` overrides the API base URL (used by tests against
 local servers; also the seam for GitHub Enterprise hosts). It must be

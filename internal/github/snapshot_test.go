@@ -90,6 +90,13 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 		case r.URL.Path == "/repos/acme/widgets/actions/runs":
 			items := pageList(page, prs, runItem)
 			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":[%s]}`, prs, strings.Join(items, ","))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			// The fake's runs all completed successfully, so their jobs are
+			// two successes: a fake whose jobs contradicted the run list
+			// would hide a mapping bug behind a lying shape.
+			_, _ = w.Write([]byte(`{"total_count":2,"jobs":[` +
+				`{"name":"build","status":"completed","conclusion":"success"},` +
+				`{"name":"test","status":"completed","conclusion":"success"}]}`))
 		case r.URL.Path == "/repos/acme/widgets/releases":
 			_, _ = w.Write([]byte(pageString(page, 150, releaseItem)))
 		case r.URL.Path == "/repos/acme/widgets/deployments":
@@ -282,12 +289,150 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 		t.Fatalf("pull-request head anchor wrong: %d tips, %d linked", tips, linked)
 	}
 	// Six issue pages join the previous 49 requests; details still share the
-	// same batched GraphQL queries rather than adding a request per PR.
-	if *calls != 55 || *calls >= 300 {
-		t.Fatalf("requests=%d, want 55 and under 300", *calls)
+	// same batched GraphQL queries rather than adding a request per PR. The
+	// ten job pages for the ten most recent runs ride the same plan.
+	// The most recent run records its two-job list; the run past the job
+	// window keeps a nil list rather than a borrowed one.
+	if len(snap.Runs[0].Jobs) != 2 || snap.Runs[0].Jobs[0].Name != "build" || snap.Runs[0].Jobs[1].Name != "test" {
+		t.Fatalf("run jobs not recorded: %+v", snap.Runs[0].Jobs)
+	}
+	if snap.Runs[10].Jobs != nil {
+		t.Fatalf("run past the job window recorded a job list: %+v", snap.Runs[10].Jobs)
+	}
+	if *calls != 65 || *calls >= 300 {
+		t.Fatalf("requests=%d, want 65 and under 300", *calls)
 	}
 	if snap.Now.IsZero() {
 		t.Fatal("missing snapshot time")
+	}
+}
+
+// One live read records the job lists of the ten most recent runs: mixed
+// outcomes land with their real names, statuses and conclusions, a run read
+// with an empty list records that emptiness explicitly, and a run past the
+// window keeps a nil list. The job reads are bounded by the window, never by
+// the run count.
+func TestBuildSnapshotRecordsRunJobs(t *testing.T) {
+	inner, _ := fakeRepo(t, 0)
+	defer inner.Close()
+	innerHandler := inner.Config.Handler
+	const runs = 12
+	run := func(id int, status, conclusion string) string {
+		return fmt.Sprintf(`{"id":%d,"head_sha":"%s","status":%q,"conclusion":%q}`, id, sha(id), status, conclusion)
+	}
+	list := []string{
+		run(1, "completed", "failure"),
+		run(2, "in_progress", ""),
+		run(3, "completed", "success"),
+	}
+	for id := 4; id <= runs; id++ {
+		list = append(list, run(id, "completed", "success"))
+	}
+	jobsByID := map[int]string{
+		1: `{"total_count":2,"jobs":[` +
+			`{"name":"build","status":"completed","conclusion":"success"},` +
+			`{"name":"test","status":"completed","conclusion":"failure"}]}`,
+		2: `{"total_count":2,"jobs":[` +
+			`{"name":"check","status":"completed","conclusion":"success"},` +
+			`{"name":"watch","status":"in_progress","conclusion":null}]}`,
+		3: `{"total_count":0,"jobs":[]}`,
+	}
+	defaultJobs := `{"total_count":1,"jobs":[{"name":"check","status":"completed","conclusion":"success"}]}`
+	jobReads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/acme/widgets/actions/runs":
+			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":[%s]}`, runs, strings.Join(list, ","))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			jobReads++
+			id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/"), "/jobs"))
+			if body, ok := jobsByID[id]; ok {
+				_, _ = w.Write([]byte(body))
+				return
+			}
+			_, _ = w.Write([]byte(defaultJobs))
+		default:
+			innerHandler.ServeHTTP(w, r)
+		}
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	snap, err := c.BuildSnapshot(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Runs) != runs {
+		t.Fatalf("runs=%d, want %d", len(snap.Runs), runs)
+	}
+	// A failed run names its failing job; the strip keeps both outcomes.
+	first := snap.Runs[0].Jobs
+	if len(first) != 2 || first[0].Name != "build" || first[0].Conclusion != "success" ||
+		first[1].Name != "test" || first[1].Conclusion != "failure" || first[1].Failed() != true {
+		t.Fatalf("mixed outcomes not recorded: %+v", first)
+	}
+	// A running run holds a finished job beside an unfinished one, with no
+	// conclusion invented for the unfinished job.
+	second := snap.Runs[1].Jobs
+	if len(second) != 2 || second[0].Status != "completed" || second[1].Status != "in_progress" ||
+		second[1].Conclusion != "" || second[1].Running() != true {
+		t.Fatalf("running job not recorded as unfinished: %+v", second)
+	}
+	// A read run with no jobs records an explicitly empty list.
+	if snap.Runs[2].Jobs == nil || len(snap.Runs[2].Jobs) != 0 {
+		t.Fatalf("empty job list not recorded explicitly: %+v", snap.Runs[2].Jobs)
+	}
+	// The window ends at the tenth run: the last run read keeps a list, the
+	// first run past it keeps nil, and the read never asked for more.
+	if snap.Runs[9].Jobs == nil {
+		t.Fatal("the tenth run, inside the window, has no job list")
+	}
+	if snap.Runs[10].Jobs != nil || snap.Runs[11].Jobs != nil {
+		t.Fatalf("runs past the window recorded job lists: %+v %+v", snap.Runs[10].Jobs, snap.Runs[11].Jobs)
+	}
+	if jobReads != opts.MaxRunsWithJobs {
+		t.Fatalf("job reads=%d, want the %d-run window", jobReads, opts.MaxRunsWithJobs)
+	}
+}
+
+// The per-run job cap and the page's own confirmation are hard bounds: a run
+// with more jobs than the cap, a page short of its recorded total, or a full
+// page with no matching total is one clear error with no snapshot, never a
+// partial strip presented as complete.
+func TestBuildSnapshotRunJobReadsFailClean(t *testing.T) {
+	fullPage := "[" + strings.Repeat(`{"name":"job","status":"completed","conclusion":"success"},`, pageSize-1) +
+		`{"name":"job","status":"completed","conclusion":"success"}]`
+	for _, tc := range []struct {
+		name, body, wantErr string
+	}{
+		{"over-cap", `{"total_count":101,"jobs":` + fullPage + "}", "exceed the 100-job limit"},
+		{"short of total", `{"total_count":5,"jobs":[{"name":"build","status":"completed","conclusion":"success"}]}`, "unconfirmed job list"},
+		{"full page without count", `{"total_count":0,"jobs":` + fullPage + "}", "unconfirmed job list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := fakeRepo(t, 5)
+			defer server.Close()
+			wrapped := server.Config.Handler
+			server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs") {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				wrapped.ServeHTTP(w, r)
+			})
+			c, _ := NewClient("test-token")
+			c.baseURL = server.URL
+			snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("accepted an unbounded job read: %v", err)
+			}
+			if !snap.Now.IsZero() || len(snap.Runs) != 0 {
+				t.Fatal("partial snapshot returned")
+			}
+		})
 	}
 }
 
@@ -309,6 +454,8 @@ func TestBuildSnapshotAboveOldCaps(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
 			_, _ = fmt.Fprintf(w, `{"total_count":%d,"workflow_runs":%s}`, many, pageString(page, many, runItem))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"name":"check","status":"completed","conclusion":"success"}]}`))
 		case strings.HasSuffix(r.URL.Path, "/releases"), strings.HasSuffix(r.URL.Path, "/deployments"):
 			_, _ = w.Write([]byte(`[]`))
 		default:
@@ -328,7 +475,7 @@ func TestBuildSnapshotAboveOldCaps(t *testing.T) {
 }
 
 func TestBuildSnapshotFailsClean(t *testing.T) {
-	for _, mode := range []string{"runs", "graphql", "branches", "issues", "format"} {
+	for _, mode := range []string{"runs", "jobs", "graphql", "branches", "issues", "format"} {
 		t.Run(mode, func(t *testing.T) {
 			server, _ := fakeRepo(t, 5)
 			defer server.Close()
@@ -337,6 +484,14 @@ func TestBuildSnapshotFailsClean(t *testing.T) {
 				switch mode {
 				case "runs":
 					if strings.HasSuffix(r.URL.Path, "/actions/runs") {
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+				case "jobs":
+					// A failed job-list read fails the whole snapshot: a
+					// run without its jobs must not masquerade as one whose
+					// job list was read and found empty.
+					if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs") {
 						w.WriteHeader(http.StatusForbidden)
 						return
 					}
@@ -433,15 +588,16 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 
 // Keep the worst-case request count in the docs checkable: 1 meta + 11 branch
 // + 51 commit + 11 issue + 11 pull + 51 run + 11 release + 11 deployment pages
-// + 80 detail queries (a first page and one follow-up for each of 40 batches),
-// all inside the 250-request budget. Closing references ride in those detail
-// queries; they add no request per PR.
+// + 80 detail queries (a first page and one follow-up for each of 40 batches)
+// + 10 job pages for the ten most recent runs, all inside the 250-request
+// budget. Closing references ride in those detail queries; they add no request
+// per PR, and each run's job list is one page bounded by the per-run cap.
 func TestDefaultPlannedRequests(t *testing.T) {
 	opts := DefaultSnapshotOptions("acme", "widgets")
-	if got := opts.plannedRequests(); got != 238 {
-		t.Fatalf("plannedRequests()=%d, want the documented 238", got)
+	if got := opts.plannedRequests(); got != 248 {
+		t.Fatalf("plannedRequests()=%d, want the documented 248", got)
 	}
-	if 238 > opts.MaxRequests {
+	if 248 > opts.MaxRequests {
 		t.Fatal("documented plan exceeds the default request budget")
 	}
 }
@@ -763,8 +919,31 @@ func TestBuildSnapshotInput(t *testing.T) {
 	if _, err := c.BuildSnapshot(context.Background(), small); err == nil {
 		t.Fatal("accepted plan over budget")
 	}
+	negative := DefaultSnapshotOptions("acme", "widgets")
+	negative.MaxRunsWithJobs = -1
+	if _, err := c.BuildSnapshot(context.Background(), negative); err == nil || !strings.Contains(err.Error(), "run-job window") {
+		t.Fatalf("accepted a negative job window: %v", err)
+	}
+	oversized := DefaultSnapshotOptions("acme", "widgets")
+	oversized.MaxJobsPerRun = pageSize + 1
+	if _, err := c.BuildSnapshot(context.Background(), oversized); err == nil || !strings.Contains(err.Error(), "job limit") {
+		t.Fatalf("accepted a per-run job cap no page can honour: %v", err)
+	}
+	closed := DefaultSnapshotOptions("acme", "widgets")
+	closed.MaxRunsWithJobs = 0
 	if *calls != 0 {
 		t.Fatalf("issued %d requests before validation", *calls)
+	}
+	// A closed job window is the one new configuration that must read: it
+	// reproduces the pre-job snapshot, with every run keeping a nil list.
+	snap, err := c.BuildSnapshot(context.Background(), closed)
+	if err != nil {
+		t.Fatalf("a closed job window must be a valid configuration: %v", err)
+	}
+	for _, r := range snap.Runs {
+		if r.Jobs != nil {
+			t.Fatalf("a closed job window recorded jobs: %+v", r.Jobs)
+		}
 	}
 }
 
