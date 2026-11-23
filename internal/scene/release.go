@@ -36,9 +36,12 @@ func buildReleases(s repo.Snapshot, addLane func(string) int, bySHA map[string]M
 			names = append(names, a.Name)
 		}
 		detail := r.Tag + " · " + r.HeadSHA
-		if len(names) == 0 {
+		switch {
+		case r.Artifacts == nil:
 			detail += " · artifacts not recorded"
-		} else {
+		case len(r.Artifacts) == 0:
+			detail += " · " + ArtifactCount(0)
+		default:
 			detail += " · artifacts: " + strings.Join(names, ", ")
 		}
 		out = append(out, Mark{
@@ -55,6 +58,16 @@ func buildReleases(s repo.Snapshot, addLane func(string) int, bySHA map[string]M
 		})
 	}
 	return out
+}
+
+// ArtifactCount names a recorded artifact count with the same wording the
+// detail panel uses, so a scene detail and a panel field never disagree on
+// one artifact.
+func ArtifactCount(n int) string {
+	if n == 1 {
+		return "1 artifact"
+	}
+	return fmt.Sprintf("%d artifacts", n)
 }
 
 // deploymentStyle maps a recorded state to a palette, never to a guess. An

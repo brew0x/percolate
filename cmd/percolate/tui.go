@@ -521,7 +521,8 @@ func recordedTime(t time.Time) string {
 }
 
 // fields reports the recorded fields of the selected object. A run without a
-// recorded job list says so, and a missing state is never read as success.
+// recorded job list says so, a release without a recorded asset list likewise,
+// and a missing state is never read as success.
 func fields(mark scene.Mark, obj any) []field {
 	switch v := obj.(type) {
 	case repo.Commit:
@@ -570,12 +571,16 @@ func fields(mark scene.Mark, obj any) []field {
 		return []field{{"id", fmt.Sprint(v.ID)}, {"status", blank(v.Status)}, {"conclusion", blank(v.Conclusion)}, {"head_sha", blank(v.HeadSHA)}, {"jobs", jobs}}
 	case repo.Release:
 		artifacts := "artifacts not recorded"
-		if len(v.Artifacts) > 0 {
-			parts := make([]string, 0, len(v.Artifacts))
-			for _, a := range v.Artifacts {
-				parts = append(parts, a.Name)
+		if v.Artifacts != nil {
+			if len(v.Artifacts) == 0 {
+				artifacts = scene.ArtifactCount(0)
+			} else {
+				parts := make([]string, 0, len(v.Artifacts))
+				for _, a := range v.Artifacts {
+					parts = append(parts, a.Name)
+				}
+				artifacts = strings.Join(parts, ", ")
 			}
-			artifacts = strings.Join(parts, ", ")
 		}
 		return []field{{"tag", blank(v.Tag)}, {"head_sha", blank(v.HeadSHA)}, {"time", recordedTime(v.Time)}, {"artifacts", artifacts}}
 	case repo.Deployment:

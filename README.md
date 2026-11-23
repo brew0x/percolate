@@ -146,7 +146,8 @@ clear line rather than drawing a partial landscape that pretends to be the
 whole repository; it never shows truncated history as if it were complete.
 Fork pull requests use their fork-qualified head label as a lane, so a fork's
 `main` is never confused with the upstream `main`; unpublished draft releases
-are not shown. The worst case is under 250 API requests.
+are not shown. The worst case is 258 API requests, inside a 300-request
+budget.
 `PERCOLATE_GITHUB_URL` may point at a different GitHub host over https; plain
 http is accepted only on loopback, because every request carries your token.
 The same host selects the `gh auth login` credential when `GITHUB_TOKEN` is

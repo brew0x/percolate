@@ -83,9 +83,14 @@ type Artifact struct {
 }
 
 type Release struct {
-	Tag       string     `json:"tag"`
-	HeadSHA   string     `json:"head_sha"`
-	Time      time.Time  `json:"time"`
+	Tag     string    `json:"tag"`
+	HeadSHA string    `json:"head_sha"`
+	Time    time.Time `json:"time"`
+	// Artifacts is the release's recorded asset list, in the order its
+	// source listed it. Nil means the source never read it, so details say
+	// `artifacts not recorded`; an explicitly empty list means the release
+	// published no assets, an honest `0 artifacts` — the same line the job
+	// list draws between nil and empty.
 	Artifacts []Artifact `json:"artifacts"`
 }
 type Deployment struct {

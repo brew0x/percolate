@@ -47,7 +47,8 @@ func runItem(i int) string {
 }
 
 func releaseItem(i int) string {
-	return fmt.Sprintf(`{"tag_name":"v%d","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z"}`, i, sha(i))
+	return fmt.Sprintf(`{"tag_name":"v%d","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z",`+
+		`"assets":[{"name":"percolate-%d.tar.gz"},{"name":"percolate-%d_checksums.txt"}]}`, i, sha(i), i, i)
 }
 
 func deploymentItem(i int) string {
@@ -101,6 +102,10 @@ func fakeRepoHandler(t *testing.T, prs int, calls *int) http.HandlerFunc {
 			_, _ = w.Write([]byte(pageString(page, 150, releaseItem)))
 		case r.URL.Path == "/repos/acme/widgets/deployments":
 			_, _ = w.Write([]byte(pageString(page, 100, deploymentItem)))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/deployments/") && strings.HasSuffix(r.URL.Path, "/statuses"):
+			// Newest first, like GitHub: the latest status leads the list,
+			// so a client that took the last item would record `queued`.
+			_, _ = w.Write([]byte(`[{"state":"success"},{"state":"queued"}]`))
 		case r.URL.Path == "/graphql":
 			var payload struct {
 				Query     string `json:"query"`
@@ -275,6 +280,20 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	if pr.Reviews[1].Author != "" {
 		t.Fatalf("deleted reviewer not handled: %+v", pr.Reviews[1])
 	}
+	// Release assets ride the release list page in GitHub order, and the
+	// ten most recent deployments record their latest status: the newest
+	// status leads GitHub's newest-first list, while a deployment past the
+	// window keeps an empty state.
+	if artifacts := snap.Releases[0].Artifacts; len(artifacts) != 2 ||
+		artifacts[0].Name != "percolate-1.tar.gz" || artifacts[1].Name != "percolate-1_checksums.txt" {
+		t.Fatalf("release artifacts not recorded in GitHub order: %+v", artifacts)
+	}
+	if snap.Deployments[0].State != "success" {
+		t.Fatalf("latest deployment state=%q, want the success that leads the status list", snap.Deployments[0].State)
+	}
+	if snap.Deployments[10].State != "" {
+		t.Fatalf("deployment past the status window recorded a state: %+v", snap.Deployments[10])
+	}
 	var tips, linked int
 	for _, cm := range snap.Commits {
 		if cm.Branch == "flow-7" {
@@ -290,7 +309,8 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	}
 	// Six issue pages join the previous 49 requests; details still share the
 	// same batched GraphQL queries rather than adding a request per PR. The
-	// ten job pages for the ten most recent runs ride the same plan.
+	// ten job pages for the ten most recent runs and the ten status pages
+	// for the ten most recent deployments ride the same plan.
 	// The most recent run records its two-job list; the run past the job
 	// window keeps a nil list rather than a borrowed one.
 	if len(snap.Runs[0].Jobs) != 2 || snap.Runs[0].Jobs[0].Name != "build" || snap.Runs[0].Jobs[1].Name != "test" {
@@ -299,8 +319,8 @@ func TestBuildSnapshotFiveHundredPullRequests(t *testing.T) {
 	if snap.Runs[10].Jobs != nil {
 		t.Fatalf("run past the job window recorded a job list: %+v", snap.Runs[10].Jobs)
 	}
-	if *calls != 65 || *calls >= 300 {
-		t.Fatalf("requests=%d, want 65 and under 300", *calls)
+	if *calls != 75 || *calls >= 300 {
+		t.Fatalf("requests=%d, want 75 and under 300", *calls)
 	}
 	if snap.Now.IsZero() {
 		t.Fatal("missing snapshot time")
@@ -589,15 +609,16 @@ func TestBuildSnapshotItemCaps(t *testing.T) {
 // Keep the worst-case request count in the docs checkable: 1 meta + 11 branch
 // + 51 commit + 11 issue + 11 pull + 51 run + 11 release + 11 deployment pages
 // + 80 detail queries (a first page and one follow-up for each of 40 batches)
-// + 10 job pages for the ten most recent runs, all inside the 250-request
-// budget. Closing references ride in those detail queries; they add no request
-// per PR, and each run's job list is one page bounded by the per-run cap.
+// + 10 job pages for the ten most recent runs + 10 status pages for the ten
+// most recent deployments, all inside the 300-request budget. Closing
+// references ride in those detail queries; each run's job list and each
+// deployment's status list is one page bounded by its own window.
 func TestDefaultPlannedRequests(t *testing.T) {
 	opts := DefaultSnapshotOptions("acme", "widgets")
-	if got := opts.plannedRequests(); got != 248 {
-		t.Fatalf("plannedRequests()=%d, want the documented 248", got)
+	if got := opts.plannedRequests(); got != 258 {
+		t.Fatalf("plannedRequests()=%d, want the documented 258", got)
 	}
-	if 248 > opts.MaxRequests {
+	if 258 > opts.MaxRequests {
 		t.Fatal("documented plan exceeds the default request budget")
 	}
 }
@@ -924,6 +945,18 @@ func TestBuildSnapshotInput(t *testing.T) {
 	if _, err := c.BuildSnapshot(context.Background(), negative); err == nil || !strings.Contains(err.Error(), "run-job window") {
 		t.Fatalf("accepted a negative job window: %v", err)
 	}
+	negativeStatuses := DefaultSnapshotOptions("acme", "widgets")
+	negativeStatuses.MaxDeploymentsWithStatuses = -1
+	if _, err := c.BuildSnapshot(context.Background(), negativeStatuses); err == nil || !strings.Contains(err.Error(), "deployment-status window") {
+		t.Fatalf("accepted a negative deployment-status window: %v", err)
+	}
+	// A status fan-out whose worst case breaks the request budget is
+	// rejected before any request is issued: the plan counts the window.
+	fanout := DefaultSnapshotOptions("acme", "widgets")
+	fanout.MaxDeploymentsWithStatuses = 60
+	if _, err := c.BuildSnapshot(context.Background(), fanout); err == nil || !strings.Contains(err.Error(), "snapshot plan") {
+		t.Fatalf("accepted a status fan-out over the request budget: %v", err)
+	}
 	oversized := DefaultSnapshotOptions("acme", "widgets")
 	oversized.MaxJobsPerRun = pageSize + 1
 	if _, err := c.BuildSnapshot(context.Background(), oversized); err == nil || !strings.Contains(err.Error(), "job limit") {
@@ -931,11 +964,13 @@ func TestBuildSnapshotInput(t *testing.T) {
 	}
 	closed := DefaultSnapshotOptions("acme", "widgets")
 	closed.MaxRunsWithJobs = 0
+	closed.MaxDeploymentsWithStatuses = 0
 	if *calls != 0 {
 		t.Fatalf("issued %d requests before validation", *calls)
 	}
-	// A closed job window is the one new configuration that must read: it
-	// reproduces the pre-job snapshot, with every run keeping a nil list.
+	// A closed job window and a closed status window are the configurations
+	// that must still read: they reproduce the pre-job, pre-state snapshot,
+	// with every run keeping a nil list and every deployment an empty state.
 	snap, err := c.BuildSnapshot(context.Background(), closed)
 	if err != nil {
 		t.Fatalf("a closed job window must be a valid configuration: %v", err)
@@ -943,6 +978,11 @@ func TestBuildSnapshotInput(t *testing.T) {
 	for _, r := range snap.Runs {
 		if r.Jobs != nil {
 			t.Fatalf("a closed job window recorded jobs: %+v", r.Jobs)
+		}
+	}
+	for _, d := range snap.Deployments {
+		if d.State != "" {
+			t.Fatalf("a closed status window recorded a state: %+v", d)
 		}
 	}
 }
@@ -1037,6 +1077,199 @@ func TestBuildSnapshotSkipsDraftReleases(t *testing.T) {
 	}
 	if len(snap.Releases) != 1 || snap.Releases[0].Tag != "v1" {
 		t.Fatalf("releases=%+v, want only the published v1", snap.Releases)
+	}
+}
+
+// A published release's asset names land in repo.Release.Artifacts in the
+// order GitHub lists them, straight off the release list page: the list
+// carries each release's assets inline, so no per-release request exists to
+// bound. A release that published no assets records that emptiness
+// explicitly — an honest `0 artifacts` in details, never `artifacts not
+// recorded` — while an item that omits the assets field entirely was not
+// read and keeps a nil list. A draft's assets never land, and the draft is
+// still filtered before the cap check, so it consumes no release budget.
+func TestBuildSnapshotRecordsReleaseAssets(t *testing.T) {
+	server, _ := fakeRepo(t, 1)
+	defer server.Close()
+	wrapped := server.Config.Handler
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			// Real-shaped list items, with the fields GitHub interleaves
+			// between asset names left in place.
+			_, _ = fmt.Fprintf(w, `[
+				{"tag_name":"v1","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false,
+				 "assets":[
+					{"id":761188502,"name":"percolate_1.0_linux_amd64.tar.gz","label":"linux amd64","state":"uploaded","size":15050573,"download_count":195069},
+					{"id":761188796,"name":"percolate_1.0_windows_arm64.zip","state":"uploaded","size":13650151},
+					{"id":761188502,"name":"checksums.txt","state":"uploaded","size":1971}
+				 ]},
+				{"tag_name":"v2-empty","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false,
+				 "assets":[]},
+				{"tag_name":"v3-missing","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false},
+				{"tag_name":"v4-draft","target_commitish":"%s","published_at":null,"draft":true,
+				 "assets":[{"name":"secret-draft.bin","state":"uploaded"}]}
+			]`, sha(1), sha(2), sha(3), sha(4))
+			return
+		}
+		wrapped.ServeHTTP(w, r)
+	})
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	opts.MaxReleases = 3 // three published releases plus a draft fit only if drafts are filtered first
+	snap, err := c.BuildSnapshot(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTags := []string{"v1", "v2-empty", "v3-missing"}
+	if len(snap.Releases) != len(wantTags) {
+		t.Fatalf("releases=%+v, want the three published %v", snap.Releases, wantTags)
+	}
+	for i, tag := range wantTags {
+		if snap.Releases[i].Tag != tag {
+			t.Fatalf("releases=%+v, want the three published %v", snap.Releases, wantTags)
+		}
+	}
+	want := []string{"percolate_1.0_linux_amd64.tar.gz", "percolate_1.0_windows_arm64.zip", "checksums.txt"}
+	artifacts := snap.Releases[0].Artifacts
+	if len(artifacts) != len(want) {
+		t.Fatalf("artifacts=%+v, want %v", artifacts, want)
+	}
+	for i := range want {
+		if artifacts[i].Name != want[i] {
+			t.Fatalf("GitHub's asset order was lost: %+v, want %v", artifacts, want)
+		}
+	}
+	if empty := snap.Releases[1].Artifacts; empty == nil || len(empty) != 0 {
+		t.Fatalf("zero-asset release did not record an explicit empty list: %+v", empty)
+	}
+	if missing := snap.Releases[2].Artifacts; missing != nil {
+		t.Fatalf("item without an assets field recorded a list: %+v", missing)
+	}
+}
+
+// The inline asset list is the complete one, not a truncated prefix: GitHub
+// documents the release object's `assets` array with no cap, and live public
+// REST reads confirm it — releases carrying 38, 55 and 168 assets each held
+// every asset inline, identical in name and order to their per-release
+// assets endpoints (checked 2026-11-23). The decode must therefore record
+// every name of a long inline list, in GitHub order; 168 mirrors the largest
+// release observed live and exceeds the 100-item page that endpoint serves,
+// so the decode proves it hides no page-shaped bound of its own.
+func TestBuildSnapshotRecordsLongInlineReleaseAssets(t *testing.T) {
+	server, _ := fakeRepo(t, 0)
+	defer server.Close()
+	wrapped := server.Config.Handler
+	const assets = 168
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			items := make([]string, 0, assets)
+			for i := 0; i < assets; i++ {
+				items = append(items, fmt.Sprintf(`{"name":"percolate_%02d.bin"}`, i))
+			}
+			_, _ = fmt.Fprintf(w, `[{"tag_name":"v1","target_commitish":"%s","published_at":"2026-01-02T00:00:00Z","draft":false,"assets":[%s]}]`,
+				sha(1), strings.Join(items, ","))
+			return
+		}
+		wrapped.ServeHTTP(w, r)
+	})
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	snap, err := c.BuildSnapshot(context.Background(), DefaultSnapshotOptions("acme", "widgets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := snap.Releases[0].Artifacts
+	if len(artifacts) != assets {
+		t.Fatalf("artifacts=%d, want the full inline list of %d", len(artifacts), assets)
+	}
+	for i, a := range artifacts {
+		if want := fmt.Sprintf("percolate_%02d.bin", i); a.Name != want {
+			t.Fatalf("asset %d name=%q, want %q: the inline order was lost", i, a.Name, want)
+		}
+	}
+}
+
+// One live read records the latest status of each recent deployment: the
+// statuses list is newest first, so the first item is the latest recorded
+// state, a read that fails or returns nothing leaves the state empty and the
+// read moves on, and the fan-out stops at the window. None of this can fail
+// the snapshot: the deployment itself was recorded by the list, and a state
+// is the colour of a flow, not the identity of an object.
+func TestBuildSnapshotRecordsDeploymentStates(t *testing.T) {
+	inner, _ := fakeRepo(t, 0)
+	defer inner.Close()
+	innerHandler := inner.Config.Handler
+	const deployments = 12
+	var calls, statusReads int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/acme/widgets/deployments":
+			items := make([]string, 0, deployments)
+			for i := 1; i <= deployments; i++ {
+				items = append(items, deploymentItem(i))
+			}
+			_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/deployments/") && strings.HasSuffix(r.URL.Path, "/statuses"):
+			statusReads++
+			id, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/deployments/"), "/statuses"))
+			switch id {
+			case 1:
+				// Newest first, as GitHub returns them: the latest status
+				// leads the list, older ones follow.
+				_, _ = w.Write([]byte(`[
+					{"id":5873719209,"state":"success","created_at":"2026-01-04T00:00:34Z"},
+					{"id":5866306219,"state":"in_progress","created_at":"2026-01-04T00:00:32Z"},
+					{"id":5866306120,"state":"queued","created_at":"2026-01-04T00:00:30Z"}]`))
+			case 2:
+				_, _ = w.Write([]byte(`[]`)) // a deployment can have no statuses yet
+			case 3:
+				w.WriteHeader(http.StatusForbidden) // a refused status page
+			default:
+				_, _ = w.Write([]byte(`[{"state":"success"}]`))
+			}
+		default:
+			innerHandler.ServeHTTP(w, r)
+		}
+	}))
+	defer server.Close()
+	c, _ := NewClient("test-token")
+	c.baseURL = server.URL
+	opts := DefaultSnapshotOptions("acme", "widgets")
+	snap, err := c.BuildSnapshot(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Deployments) != deployments {
+		t.Fatalf("deployments=%d, want %d", len(snap.Deployments), deployments)
+	}
+	// The latest status leads GitHub's newest-first list: taking the last
+	// item instead would record `queued`.
+	if snap.Deployments[0].State != "success" {
+		t.Fatalf("latest deployment state=%q, want success", snap.Deployments[0].State)
+	}
+	// A deployment with no statuses and one whose read was refused both
+	// keep an empty state, and the read still reaches later deployments.
+	if snap.Deployments[1].State != "" || snap.Deployments[2].State != "" {
+		t.Fatalf("empty or refused status became a state: %+v %+v", snap.Deployments[1], snap.Deployments[2])
+	}
+	if snap.Deployments[3].State != "success" {
+		t.Fatalf("read did not continue past a refused status: %+v", snap.Deployments[3])
+	}
+	// The window ends at the tenth deployment: the last two keep no state.
+	if snap.Deployments[9].State != "success" {
+		t.Fatalf("the tenth deployment, inside the window, has no state: %+v", snap.Deployments[9])
+	}
+	if snap.Deployments[10].State != "" || snap.Deployments[11].State != "" {
+		t.Fatalf("deployments past the window recorded states: %+v %+v", snap.Deployments[10], snap.Deployments[11])
+	}
+	if statusReads != opts.MaxDeploymentsWithStatuses {
+		t.Fatalf("status reads=%d, want the %d-deployment window", statusReads, opts.MaxDeploymentsWithStatuses)
+	}
+	if calls > opts.plannedRequests() || calls > opts.MaxRequests {
+		t.Fatalf("requests=%d over plan %d or budget %d", calls, opts.plannedRequests(), opts.MaxRequests)
 	}
 }
 

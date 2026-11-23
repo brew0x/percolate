@@ -308,6 +308,9 @@ func fakeGitHub(t *testing.T, calls *int) *httptest.Server {
 			fmt.Fprint(w, fmt.Sprintf(`[{"tag_name":"v0.1","target_commitish":"%s","published_at":"2026-01-03T00:00:00Z"}]`, sha(2)))
 		case "/repos/acme/widgets/deployments":
 			fmt.Fprint(w, fmt.Sprintf(`[{"id":9,"sha":"%s","environment":"prod"}]`, sha(3)))
+		case "/repos/acme/widgets/deployments/9/statuses":
+			// Newest first, like GitHub: the latest status leads the list.
+			fmt.Fprint(w, `[{"state":"success"},{"state":"queued"}]`)
 		case "/graphql":
 			body, _ := io.ReadAll(r.Body)
 			query := string(body)
@@ -402,7 +405,7 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 	if len(head.Parents) != 6 || head.Parents[0] != sha(2000) || head.Parents[5] != sha(2005) {
 		t.Fatalf("head parents not complete in recording: %+v", head.Parents)
 	}
-	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "" {
+	if len(snap.Commits) != 3 || snap.Runs[0].Conclusion != "" || snap.Deployments[0].State != "success" {
 		t.Fatalf("unexpected objects: %+v", snap)
 	}
 	// The one recorded run carries its two-job list through record and replay
@@ -418,11 +421,12 @@ func TestWatchRecordsAndReplaysIdentically(t *testing.T) {
 		snap.Issues[1].Number != 6 || snap.Issues[1].ClosedBy != 0 {
 		t.Fatalf("issues or closing references lost in recording: %+v", snap.Issues)
 	}
-	// 248 is the documented worst-case plan for default options. This short
+	// 258 is the documented worst-case plan for default options. This short
 	// read costs one page per list plus two detail pages for the one batch,
-	// and one page for the one run's job list.
-	if calls > 248 || calls >= 250 {
-		t.Fatalf("record→replay used %d requests, over the 248-request plan and 250-request budget", calls)
+	// one page for the one run's job list and one for the one deployment's
+	// statuses.
+	if calls > 258 || calls >= 300 {
+		t.Fatalf("record→replay used %d requests, over the 258-request plan and 300-request budget", calls)
 	}
 }
 
