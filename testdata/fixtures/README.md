@@ -291,8 +291,14 @@ must be checked the same way:
 - **Replay:** golden frames `testdata/golden/recorded-jobs-*` are derived from
   this exact file and checked in CI by `TestGolden`,
   `TestAllRecordedFixturesReplayToGolden`,
-  `TestAllRecordedFixturesProvenance` and
-  `TestRecordedJobsFixtureCarriesRealJobLists`.
+  `TestAllRecordedFixturesProvenance`,
+  `TestRecordedJobsFixtureCarriesRealJobLists` and
+  `TestRecordedJobsStripBelongsToOneRun`. In every replay size the unlinked
+  lane stacks the 201 runs whose commits the snapshot does not hold; the
+  frame resolves that shared anchor to its newest run, 45106274655, whose
+  real two-cell `✓−` strip — the `dry-run` success beside the skipped
+  `release` — is the strip visible there, and no cell in any frame names a
+  second run beside it.
 
 ## `small.json`, `busy.json`, `scale.json` — fictional fixtures
 

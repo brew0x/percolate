@@ -6,7 +6,7 @@
 - **Flow** — a pull request's path from head branch into base branch.
 - **Spring** — an open issue waiting at the top of a lane, feeding a pull request only when a recorded closing reference names it.
 - **Pulse** — a running workflow's repeating, frame-indexed signal.
-- **Job strip** — the cells beside a run's commit, one per recorded job.
+- **Job strip** — the cells beside a run's commit, one per recorded job; where several runs share one cell, the newest run's strip is the one shown.
 - **Artifact** — a published file recorded on a release, shown above it.
 - **Deployment flow** — the branches from a release to its recorded environments.
 - **Fade** — a dimmer style for a commit older than 48 snapshot hours.

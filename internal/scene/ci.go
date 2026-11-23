@@ -10,7 +10,10 @@ import (
 // JobMark is one recorded job inside a workflow run. A run with a recorded
 // job list draws one cell per job, in snapshot order, starting two columns
 // right of the run's commit; a run whose jobs were never recorded keeps its
-// single aggregate mark.
+// single aggregate mark. When several runs share that anchor cell — the
+// unlinked lane, or a row compressed enough to bring them together — Frame
+// resolves them to the newest run, and the cells shown there belong to that
+// one run alone.
 type JobMark struct {
 	Glyph   rune
 	Style   Style

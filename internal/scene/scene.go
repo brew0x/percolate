@@ -206,7 +206,9 @@ type Owners [][]string
 
 // Frame uses no time, I/O, randomness, or terminal state. Path cells show the
 // union of the recorded segments through them; mark overlaps resolve in
-// snapshot order, and the selected object is drawn last so it is inspectable.
+// snapshot order, except that run marks sharing an anchor cell resolve to
+// the newest run, which draws last and keeps the whole strip region. The
+// selected object is drawn last so it is inspectable.
 func Frame(s Scene, frameIndex, width, height int) Grid {
 	g, _ := FrameWithOwners(s, frameIndex, width, height)
 	return g
@@ -214,7 +216,9 @@ func Frame(s Scene, frameIndex, width, height int) Grid {
 
 // FrameWithOwners returns the frame and its cell ownership from one render.
 // Overlaps go to the mark drawn last, matching the visible glyph, and an empty
-// cell has no owner. A tiny frame draws only the title and owns nothing.
+// cell has no owner — except run marks sharing an anchor cell, which resolve
+// to the newest run so a job strip never mixes two runs' marks. A tiny frame
+// draws only the title and owns nothing.
 func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	width = max(0, width)
 	height = max(0, height)
@@ -410,6 +414,29 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	// Splitting the two lets every path settle before any mark is drawn, so a
 	// later flow cannot write '─' over an earlier flow's arrow at a different
 	// base that its path merely crosses on a compressed row.
+	// Runs that share an anchor cell — the unlinked lane collects every run
+	// whose commit the snapshot does not hold, and a compressed row can
+	// bring several runs to one cell — resolve to one run: the newest,
+	// whose aggregate glyph or job strip is the repository's current CI
+	// state there. widestRun records how many cells any run at an anchor
+	// draws this frame, so the run that wins the anchor can also clear the
+	// leftover cells of a longer strip an older run painted there: the
+	// cells beside a run mark then belong to exactly one run, never to a
+	// mixture of two reads.
+	type runAnchor struct{ lane, y int }
+	widestRun := map[runAnchor]int{}
+	for _, m := range s.Marks {
+		if m.Kind != "run" || !visible(m.Lane) {
+			continue
+		}
+		w := 1
+		if len(m.Jobs) > 0 {
+			w = min(len(m.Jobs), max(1, lay.widthOf(m.Lane)-2))
+		}
+		if a := (runAnchor{m.Lane, row(m)}); w > widestRun[a] {
+			widestRun[a] = w
+		}
+	}
 	draw := func(m Mark, selected, path bool) {
 		if m.Kind == "issue" || m.Kind == "release" || m.Kind == "deployment" {
 			return // drawn by drawIssues and drawReleases after the other marks
@@ -482,25 +509,51 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 				}
 			}
 		case "run":
+			painted := 1
 			if cells := runCells(m, frameIndex, max(1, lay.widthOf(m.Lane)-2), selected); len(cells) > 0 {
+				painted = len(cells)
 				for i, c := range cells {
 					put(x+2+i, y, c.Rune, c.Style)
 					own(x+2+i, y, m.ID)
 				}
-				return
-			}
-			glyph := m.Glyph
-			if m.Running {
-				glyph = pulseGlyph(frameIndex)
-				if ((frameIndex%32)+32)%32 < 16 && !selected {
-					style = Faded
+			} else {
+				glyph := m.Glyph
+				if m.Running {
+					glyph = pulseGlyph(frameIndex)
+					if ((frameIndex%32)+32)%32 < 16 && !selected {
+						style = Faded
+					}
 				}
+				put(x+2, y, glyph, style)
+				own(x+2, y, m.ID)
 			}
-			put(x+2, y, glyph, style)
-			own(x+2, y, m.ID)
+			// One anchor, one run: whatever wins the cell also owns the
+			// whole strip region, so an older run's longer strip cannot
+			// leave its tail beside this mark reading as one job list.
+			for i := painted; i < widestRun[runAnchor{m.Lane, y}]; i++ {
+				put(x+2+i, y, ' ', Plain)
+			}
+			return
 		default:
 			put(x, y, m.Glyph, style)
 			own(x, y, m.ID)
+		}
+	}
+	// ordered keeps every non-run mark in snapshot order and moves run marks
+	// to the end, oldest first. Run cells share no column with beads,
+	// diamonds or labels, so drawing runs after them changes nothing else;
+	// painting the oldest run first makes the newest run at a shared anchor
+	// the one drawn last, so the current CI state wins the cell and its
+	// strip survives whole.
+	ordered := make([]Mark, 0, len(s.Marks))
+	for _, m := range s.Marks {
+		if m.Kind != "run" {
+			ordered = append(ordered, m)
+		}
+	}
+	for i := len(s.Marks) - 1; i >= 0; i-- {
+		if s.Marks[i].Kind == "run" {
+			ordered = append(ordered, s.Marks[i])
 		}
 	}
 	// Draw in two layers, fading first and surviving second, so everything
@@ -514,22 +567,22 @@ func FrameWithOwners(s Scene, frameIndex, width, height int) (Grid, Owners) {
 	// keep the cell instead of being crossed out by a dim arrow that is on
 	// its way out.
 	drawLayer := func(departing bool) {
-		for _, m := range s.Marks {
+		for _, m := range ordered {
 			if m.Kind == "pr" && m.Departing == departing && m.ID != s.SelectedID {
 				draw(m, false, true)
 			}
 		}
-		for _, m := range s.Marks {
+		for _, m := range ordered {
 			if m.Kind == "pr" && m.Departing == departing && m.ID == s.SelectedID {
 				draw(m, true, true)
 			}
 		}
-		for _, m := range s.Marks {
+		for _, m := range ordered {
 			if m.Departing == departing && m.ID != s.SelectedID {
 				draw(m, false, false)
 			}
 		}
-		for _, m := range s.Marks {
+		for _, m := range ordered {
 			if m.Departing == departing && m.ID == s.SelectedID {
 				draw(m, true, false)
 			}
