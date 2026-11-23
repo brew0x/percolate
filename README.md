@@ -137,8 +137,11 @@ get one. Color is optional in render mode; use a Unicode-capable terminal font.
 
 A live read is a bounded window of recent history, not a repository's entire
 lifetime: at most 5000 default-branch commits, 5000 workflow runs, 1000 open
-pull requests and 1000 branches, releases and deployments each. These fit an
-active repository. If a list still exceeds its limit, Percolate stops with one
+pull requests and 1000 branches, releases and deployments each. The ten most
+recent workflow runs also record their jobs, at most 100 each, so a run's
+strip shows one mark per job and its details name failing jobs; older runs
+keep the single run mark. These fit an active repository. If a list still
+exceeds its limit, Percolate stops with one
 clear line rather than drawing a partial landscape that pretends to be the
 whole repository; it never shows truncated history as if it were complete.
 Fork pull requests use their fork-qualified head label as a lane, so a fork's

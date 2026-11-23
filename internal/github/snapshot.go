@@ -30,6 +30,17 @@ const pullDetailPageSize = 100
 // longer connection fails the whole snapshot instead of truncating silently.
 const pullDetailPages = 2
 
+// runJobsPerRunDefault and runJobsWindowDefault bound the per-run job reads.
+// Each of the most recent runs costs exactly one request: GitHub's jobs
+// envelope records the run's total job count, so a single page either holds
+// the whole list or proves the run exceeds the per-run cap. A bigger run fails
+// with one line rather than recording a truncated strip, and runs past the
+// window keep a nil job list, so their details still say the truth.
+const (
+	runJobsPerRunDefault = pageSize
+	runJobsWindowDefault = 10
+)
+
 // SnapshotOptions bounds one live repository read. Exceeding a limit is an
 // error, never a partial snapshot: an incomplete read must not masquerade as
 // repository state. Every list read enforces both its page count and its item
@@ -44,15 +55,25 @@ type SnapshotOptions struct {
 	MaxRuns         int
 	MaxReleases     int
 	MaxDeployments  int
+	// MaxRunsWithJobs bounds how many of the most recent runs (in the
+	// recorded list order) get their job list read. Runs past the window
+	// keep a nil Jobs slice, so their details still report `jobs not
+	// recorded` rather than a fabricated count.
+	MaxRunsWithJobs int
+	// MaxJobsPerRun bounds the jobs recorded for one run. It must fit one
+	// 100-item page, because each run's job list is read with a single
+	// request whose total_count either confirms the page or fails the read.
+	MaxJobsPerRun int
 }
 
 // DefaultSnapshotOptions bounds one read to recent history: up to 1000 open
 // issues and pull requests, 5000 default-branch commits, 5000 workflow runs and
-// 1000 branches, releases and deployments. These are generous enough for an
-// active repository; a read that still exceeds one is a clear error, never a
-// partial snapshot. The worst case is 238 requests, under the 250-request
-// budget (and the 300-request budget promised for #3); a short collection costs
-// fewer because each list stops at its first short page. The limits hold for
+// 1000 branches, releases and deployments, plus the job lists of the 10 most
+// recent runs, at most 100 jobs each. These are generous enough for an active
+// repository; a read that still exceeds one is a clear error, never a partial
+// snapshot. The worst case is 248 requests, under the 250-request budget (and
+// the 300-request budget promised for #3); a short collection costs fewer
+// because each list stops at its first short page. The limits hold for
 // owner/repo in README.md.
 func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 	return SnapshotOptions{
@@ -66,6 +87,8 @@ func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 		MaxRuns:         50 * pageSize,
 		MaxReleases:     10 * pageSize,
 		MaxDeployments:  10 * pageSize,
+		MaxRunsWithJobs: runJobsWindowDefault,
+		MaxJobsPerRun:   runJobsPerRunDefault,
 	}
 }
 
@@ -74,18 +97,18 @@ func DefaultSnapshotOptions(owner, name string) SnapshotOptions {
 func pages(items int) int { return items/pageSize + 1 }
 
 // plannedRequests is the exact upper bound on requests this configuration can
-// issue: each list read is bounded by pages(item cap) requests and, because
-// every item cap is enforced, pull-request details never exceed
-// pullDetailPages*ceil(MaxPullRequests/pullDetailBatch) queries (one first page
-// plus at most one follow-up per batch). BuildSnapshot rejects configurations
-// whose plan exceeds MaxRequests, so a run can never drift past its budget
-// mid-read.
+// issue: each list read is bounded by pages(item cap) requests, pull-request
+// details never exceed pullDetailPages*ceil(MaxPullRequests/pullDetailBatch)
+// queries (one first page plus at most one follow-up per batch), and the
+// run-job window adds exactly one request per run, because each run's job
+// list must fit one page. BuildSnapshot rejects configurations whose plan
+// exceeds MaxRequests, so a run can never drift past its budget mid-read.
 func (o SnapshotOptions) plannedRequests() int {
 	batches := (o.MaxPullRequests + pullDetailBatch - 1) / pullDetailBatch
 	detail := pullDetailPages * batches
 	return 1 + pages(o.MaxBranches) + pages(o.MaxCommits) + pages(o.MaxIssues) +
 		pages(o.MaxPullRequests) + pages(o.MaxRuns) + pages(o.MaxReleases) +
-		pages(o.MaxDeployments) + detail
+		pages(o.MaxDeployments) + detail + o.MaxRunsWithJobs
 }
 
 // BuildSnapshot assembles repo.Snapshot from REST list reads and batched
@@ -98,6 +121,15 @@ func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.
 	}
 	if opts.MaxRequests <= 0 {
 		return repo.Snapshot{}, errors.New("request budget must be positive")
+	}
+	if opts.MaxRunsWithJobs < 0 {
+		return repo.Snapshot{}, errors.New("run-job window must not be negative")
+	}
+	// One request per run can only hold a page of jobs, so the per-run cap
+	// must fit a page: a larger cap could not be honoured by the read the
+	// plan counts on.
+	if opts.MaxRunsWithJobs > 0 && (opts.MaxJobsPerRun <= 0 || opts.MaxJobsPerRun > pageSize) {
+		return repo.Snapshot{}, fmt.Errorf("per-run job limit must be between 1 and %d", pageSize)
 	}
 	if plan := opts.plannedRequests(); plan > opts.MaxRequests {
 		return repo.Snapshot{}, fmt.Errorf("snapshot plan needs %d requests over the %d-request budget", plan, opts.MaxRequests)
@@ -124,6 +156,9 @@ func (c *Client) BuildSnapshot(ctx context.Context, opts SnapshotOptions) (repo.
 		return repo.Snapshot{}, err
 	}
 	if err := c.listRuns(ctx, opts, &snap); err != nil {
+		return repo.Snapshot{}, err
+	}
+	if err := c.fetchRunJobs(ctx, opts, &snap); err != nil {
 		return repo.Snapshot{}, err
 	}
 	if err := c.listReleases(ctx, opts, &snap); err != nil {
@@ -345,6 +380,51 @@ func (c *Client) listRuns(ctx context.Context, opts SnapshotOptions, snap *repo.
 		return fmt.Errorf("GitHub workflow runs exceed the %d-run limit", opts.MaxRuns)
 	}
 	snap.Runs = runs
+	return nil
+}
+
+// fetchRunJobs records the job lists of the most recent runs, in the order the
+// run list was read (GitHub returns newest first). One request per run reads a
+// full page of jobs, and the same response's total_count either confirms the
+// page held the whole list or fails the read: a run with more jobs than
+// MaxJobsPerRun, a page short of its own count, or a full page with no
+// matching count is one clear error, never a partial strip recorded as
+// complete. A run whose jobs were not read — past the window, or a snapshot
+// with the window closed — keeps a nil Jobs slice, so details keep saying
+// `jobs not recorded` rather than a fabricated zero. A run read within the
+// window whose list is empty records an explicitly empty list, which is the
+// honest statement `0 jobs`.
+func (c *Client) fetchRunJobs(ctx context.Context, opts SnapshotOptions, snap *repo.Snapshot) error {
+	reads := min(len(snap.Runs), opts.MaxRunsWithJobs)
+	for i := 0; i < reads; i++ {
+		run := &snap.Runs[i]
+		var obj struct {
+			TotalCount int `json:"total_count"`
+			Jobs       []struct {
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+			} `json:"jobs"`
+		}
+		path := fmt.Sprintf("%s?per_page=%d", opts.repoPath(fmt.Sprintf("/actions/runs/%d/jobs", run.ID)), pageSize)
+		if err := c.getPage(ctx, path, &obj); err != nil {
+			return err
+		}
+		if obj.TotalCount > opts.MaxJobsPerRun {
+			return fmt.Errorf("GitHub run %d jobs exceed the %d-job limit", run.ID, opts.MaxJobsPerRun)
+		}
+		// A page of fewer than pageSize jobs ends the list by GitHub's own
+		// paging rule, but it must still carry every job total_count names;
+		// a full page needs the count to prove nothing was left behind.
+		if len(obj.Jobs) < obj.TotalCount || (len(obj.Jobs) == pageSize && len(obj.Jobs) != obj.TotalCount) {
+			return fmt.Errorf("GitHub returned an unconfirmed job list for run %d (%d of %d)", run.ID, len(obj.Jobs), obj.TotalCount)
+		}
+		jobs := make([]repo.Job, 0, len(obj.Jobs))
+		for _, j := range obj.Jobs {
+			jobs = append(jobs, repo.Job{Name: j.Name, Status: j.Status, Conclusion: j.Conclusion})
+		}
+		run.Jobs = jobs
+	}
 	return nil
 }
 

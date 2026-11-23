@@ -25,6 +25,7 @@ type watchServer struct {
 	version     int
 	commits     string
 	run         string
+	jobs        string
 	fail        bool
 	limit       bool
 	reset       int64
@@ -45,7 +46,8 @@ func newWatchServer(t *testing.T) *watchServer {
 		t: t,
 		commits: "[" + shaJSON(2, "main", "2026-01-02T00:00:00Z", "[]") + "," +
 			shaJSON(1, "main", "2026-01-01T00:00:00Z", fmt.Sprintf(`[{"sha":"%s"}]`, sha(2))) + "]",
-		run: fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"id":5,"head_sha":"%s","status":"in_progress","conclusion":null}]}`, sha(2)),
+		run:  fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"id":5,"head_sha":"%s","status":"in_progress","conclusion":null}]}`, sha(2)),
+		jobs: `{"total_count":2,"jobs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"watch","status":"in_progress","conclusion":null}]}`,
 	}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
@@ -77,7 +79,8 @@ func (s *watchServer) requestTimes() []time.Time {
 }
 
 // change inserts a newer commit and finishes the running run: a real recorded
-// change that must animate once and then settle.
+// change that must animate once and then settle. The run's jobs settle with
+// it, so the finished run records a finished, failing job list.
 func (s *watchServer) change() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,6 +88,7 @@ func (s *watchServer) change() {
 	items := strings.TrimSuffix(strings.TrimPrefix(s.commits, "["), "]")
 	s.commits = "[" + shaJSON(3, "main", "2026-01-04T00:00:00Z", "[]") + "," + items + "]"
 	s.run = fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"id":5,"head_sha":"%s","status":"completed","conclusion":"failure"}]}`, sha(2))
+	s.jobs = `{"total_count":2,"jobs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"failure"}]}`
 }
 
 // failNext makes the next repository-meta read return 500 once, emulating a
@@ -142,6 +146,8 @@ func (s *watchServer) serve(w http.ResponseWriter, r *http.Request) {
 		body = `[{"number":1,"state":"open","head":{"ref":"flow-1"},"base":{"ref":"main"}}]`
 	case "/repos/acme/widgets/actions/runs":
 		body = s.run
+	case "/repos/acme/widgets/actions/runs/5/jobs":
+		body = s.jobs
 	case "/repos/acme/widgets/releases", "/repos/acme/widgets/deployments":
 		body = `[]`
 	default:

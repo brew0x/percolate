@@ -15,7 +15,7 @@
 | `✓` | Completed successful workflow or job | Conclusion success. |
 | `✕` | Completed failed workflow or job | Conclusion failure, timed_out, or startup_failure. |
 | `−` | Other completed workflow or job | Cancelled, skipped, neutral, or another conclusion; never implies success and never uses the fail palette. |
-| Job cells two columns right of a commit | A workflow run's recorded jobs | A run with a recorded job list breaks into one cell per job in snapshot order; each uses its own recorded status and conclusion, so a running job pulses while a finished job beside it holds its outcome. A run without a recorded job list keeps one aggregate mark. If more jobs are recorded than fit before the next lane, the last cell carries a failure mark when a displaced job failed, otherwise the run's own outcome, so a hidden failure is never invisible. |
+| Job cells two columns right of a commit | A workflow run's recorded jobs | A run with a recorded job list breaks into one cell per job in snapshot order; each uses its own recorded status and conclusion, so a running job pulses while a finished job beside it holds its outcome. A run without a recorded job list keeps one aggregate mark. If more jobs are recorded than fit before the next lane, the last cell carries a failure mark when a displaced job failed, otherwise the run's own outcome, so a hidden failure is never invisible. Several runs can share one anchor cell — the unlinked lane, or a row compressed enough to bring several runs together — and there exactly one run is shown: the newest, whose mark is the repository's current CI state at that anchor. It is shown whole, and no older run's strip cells survive beside it, so a job strip always describes one run, never a mixture of two. A selected run still wins its anchor so the cursor stays inspectable. |
 | `◆ tag` | Release | At the bottom of the lane containing its head commit, gathering the deployments that record the same head SHA. Releases with no recorded SHA use an `unlinked` lane. |
 | `▤ name` | Published release artifact | One row above its release per recorded artifact, nearest the release first in snapshot order, using the release's lane and style. A row at or above the commit region is not claimed, and an artifact whose whole run is occupied by a path or flow is left out of the strip; the full list is in the release's details. During a change an artifact written by a fading release yields its whole row to a surviving release's artifact, and a shorter surviving name clears the old tail, so no half-overwritten filename is drawn; recorded paths and flows still keep their cells. Selection orders marks inside the fading or surviving layer, so even a selected departure yields its row to the replacement. A release with no recorded artifacts says so there rather than drawing an empty name. |
 | `─▣ environment` | Deployment flowing out of a release | On the release's bottom row, one branch per deployment in snapshot order, joined to `◆` by a `─` connector. The link comes only from an equal recorded head SHA; the first release in snapshot order owns a shared commit. A deployment with no matching release instead keeps a standalone `▣ environment` at the lane bottom, drawn only where that row is free. If the named strip does not fit, environment names are dropped first so every deployment keeps its own status-coloured `▣`. When even status-only branches do not fit, a branch whose `▣` would be cut off is omitted whole, so no `─` is left without its glyph; omitted deployments stay in details and navigation. |
@@ -34,12 +34,13 @@ draws no `◆`. A fork pull request's head lane is GitHub's fork-qualified label
 same branch name.
 
 CI sits two columns right of its commit; a run with recorded jobs extends that
-strip one cell per job in snapshot order. Releases or runs whose SHA is absent
-use an explicit `unlinked` lane. Commit and PR paths use separate vertical
-regions; releases collect at the bottom with their artifacts stacked above and
-their deployments flowing out along the release row. Branch names and object
-labels truncate to their lane width. Plain rendering preserves glyphs while
-omitting colors.
+strip one cell per job in snapshot order, and where several runs share one
+cell the newest run's mark is the one shown. Releases or runs whose SHA is
+absent use an explicit `unlinked` lane. Commit and PR paths use separate
+vertical regions; releases collect at the bottom with their artifacts stacked
+above and their deployments flowing out along the release row. Branch names and
+object labels truncate to their lane width. Plain rendering preserves glyphs
+while omitting colors.
 
 A deployment's recorded state colours its whole branch: `success` uses the pass
 palette, `failure` and `error` the fail palette, and `queued`, `pending` and
